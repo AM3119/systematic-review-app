@@ -1,0 +1,74 @@
+import express from 'express';
+import cors from 'cors';
+import { createServer } from 'http';
+import { Server as SocketServer } from 'socket.io';
+import jwt from 'jsonwebtoken';
+import authRoutes from './routes/auth';
+import reviewRoutes from './routes/reviews';
+import articleRoutes from './routes/articles';
+import screeningRoutes from './routes/screening';
+import extractionRoutes from './routes/extraction';
+import { JWT_SECRET } from './middleware/auth';
+
+const app = express();
+const httpServer = createServer(app);
+
+const io = new SocketServer(httpServer, {
+  cors: { origin: 'http://localhost:5173', credentials: true }
+});
+
+app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+app.use(express.json({ limit: '20mb' }));
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/reviews', articleRoutes);
+app.use('/api/reviews', screeningRoutes);
+app.use('/api/reviews', extractionRoutes);
+
+// Socket.io for real-time collaboration
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  try {
+    const user = jwt.verify(token, JWT_SECRET) as any;
+    (socket as any).user = user;
+    next();
+  } catch {
+    next(new Error('Authentication error'));
+  }
+});
+
+io.on('connection', (socket) => {
+  const user = (socket as any).user;
+
+  socket.on('join-review', (reviewId: string) => {
+    socket.join(`review:${reviewId}`);
+    socket.to(`review:${reviewId}`).emit('user-joined', { userId: user.id, name: user.name });
+  });
+
+  socket.on('leave-review', (reviewId: string) => {
+    socket.leave(`review:${reviewId}`);
+    socket.to(`review:${reviewId}`).emit('user-left', { userId: user.id, name: user.name });
+  });
+
+  socket.on('screening-decision', (data: { reviewId: string; articleId: string; phase: string; decision: string }) => {
+    socket.to(`review:${data.reviewId}`).emit('decision-made', {
+      userId: user.id, name: user.name, ...data
+    });
+  });
+
+  socket.on('typing', (data: { reviewId: string; articleId: string; field: string }) => {
+    socket.to(`review:${data.reviewId}`).emit('collaborator-typing', { userId: user.id, name: user.name, ...data });
+  });
+
+  socket.on('disconnect', () => {});
+});
+
+// Make io accessible to routes
+app.set('io', io);
+
+const PORT = process.env.PORT || 3001;
+httpServer.listen(PORT, () => {
+  console.log(`SRA Backend running on http://localhost:${PORT}`);
+});
