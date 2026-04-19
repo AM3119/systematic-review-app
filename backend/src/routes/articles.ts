@@ -182,7 +182,7 @@ router.get('/:reviewId/articles/:articleId', authMiddleware, (req: AuthRequest, 
       JOIN users u ON sd.user_id = u.id
       WHERE sd.article_id = ?
     `).all(req.params.articleId);
-    for (const d of all) {
+    for (const d of all as any[]) {
       if (!decisions[d.phase]) decisions[d.phase] = [];
       decisions[d.phase].push(d);
     }
