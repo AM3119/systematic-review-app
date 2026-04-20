@@ -1,8 +1,25 @@
 import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
 import db, { transaction } from '../db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { awardPoints, updateStreak, POINTS } from '../utils/gamification';
+
+const PDF_DIR = path.join(__dirname, '../../../data/pdfs');
+
+async function extractPdfText(localUrl: string): Promise<string | null> {
+  try {
+    if (!localUrl.startsWith('/api/pdfs/')) return null;
+    const filename = localUrl.replace('/api/pdfs/', '');
+    const filepath = path.join(PDF_DIR, filename);
+    if (!fs.existsSync(filepath)) return null;
+    const pdfParse = require('pdf-parse');
+    const buf = fs.readFileSync(filepath);
+    const data = await pdfParse(buf, { max: 20 }); // first 20 pages
+    return data.text?.slice(0, 15000) || null; // cap at ~15k chars
+  } catch { return null; }
+}
 
 const router = Router();
 
@@ -193,14 +210,17 @@ router.post('/:reviewId/extraction/:articleId/ai-extract', authMiddleware, async
   const firstAuthorLastName = authors[0]?.split(',')[0]?.trim() || authors[0]?.split(' ').pop() || 'Unknown';
   const citation = `${firstAuthorLastName} et al. ${article.year || ''}`.trim();
 
+  // Try to read full-text PDF first, fall back to abstract
+  const pdfText = article.full_text_url ? await extractPdfText(article.full_text_url) : null;
+  const contentSource = pdfText ? 'FULL TEXT (from PDF)' : 'ABSTRACT ONLY';
+
   const articleContent = [
     `Title: ${article.title}`,
     `Authors: ${article.authors}`,
     `Journal: ${article.journal} (${article.year})`,
     `DOI: ${article.doi || 'N/A'}`,
     '',
-    'Abstract:',
-    article.abstract || '(No abstract available)',
+    pdfText ? `Full Text:\n${pdfText}` : `Abstract:\n${article.abstract || '(No abstract available)'}`,
   ].join('\n');
 
   const fieldsPrompt = fields.map((f: any) => {
@@ -253,7 +273,7 @@ Rules:
     });
 
     awardPoints(req.user!.id, POINTS.EXTRACT_DATA * 2, req.params.reviewId);
-    res.json({ success: true, extracted, citation, fields_populated: toSave.length, model: OLLAMA_MODEL });
+    res.json({ success: true, extracted, citation, fields_populated: toSave.length, model: OLLAMA_MODEL, content_source: contentSource });
   } catch (err: any) {
     console.error('AI extraction error:', err.message);
     if (err.message?.includes('ECONNREFUSED')) {

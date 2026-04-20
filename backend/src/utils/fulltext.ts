@@ -11,250 +11,257 @@ export interface FetchResult {
   message?: string;
 }
 
-// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+// ─── Core HTTP ────────────────────────────────────────────────────────────────
 
-function fetchUrl(url: string, opts: { followRedirects?: number; maxSize?: number } = {}): Promise<{ body: Buffer; contentType: string; finalUrl: string }> {
+function get(url: string, timeoutMs = 12000): Promise<{ body: Buffer; ct: string; finalUrl: string }> {
   return new Promise((resolve, reject) => {
-    const maxRedirects = opts.followRedirects ?? 5;
-    const maxSize = opts.maxSize ?? 20 * 1024 * 1024; // 20 MB
-
-    const makeReq = (target: string, redirectsLeft: number) => {
+    const attempt = (target: string, hops: number) => {
+      if (hops > 6) return reject(new Error('Too many redirects'));
       const mod = target.startsWith('https') ? https : http;
       const req = mod.get(target, {
+        timeout: timeoutMs,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/pdf,application/xhtml+xml,*/*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+          'Accept': 'application/pdf,text/html,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
         },
-        timeout: 20000,
-      }, (res) => {
-        const status = res.statusCode || 0;
-        // Follow redirects
-        if ([301, 302, 303, 307, 308].includes(status) && res.headers.location && redirectsLeft > 0) {
+      }, res => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode!) && res.headers.location) {
           res.resume();
-          const next = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, target).href;
-          makeReq(next, redirectsLeft - 1);
-          return;
+          const next = res.headers.location.startsWith('http')
+            ? res.headers.location
+            : new URL(res.headers.location, target).href;
+          return attempt(next, hops + 1);
         }
-        if (status < 200 || status >= 300) { res.resume(); reject(new Error(`HTTP ${status} for ${target}`)); return; }
-
+        if ((res.statusCode ?? 0) >= 400) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
         const chunks: Buffer[] = [];
-        let size = 0;
-        res.on('data', (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > maxSize) { req.destroy(); reject(new Error('Response too large')); return; }
-          chunks.push(chunk);
-        });
-        res.on('end', () => resolve({
-          body: Buffer.concat(chunks),
-          contentType: res.headers['content-type'] || '',
-          finalUrl: target,
-        }));
+        let sz = 0;
+        res.on('data', (c: Buffer) => { sz += c.length; if (sz > 52_428_800) { req.destroy(); reject(new Error('Too large')); } else chunks.push(c); });
+        res.on('end', () => resolve({ body: Buffer.concat(chunks), ct: res.headers['content-type'] || '', finalUrl: target }));
+        res.on('error', reject);
       });
       req.on('error', reject);
       req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
     };
-    makeReq(url, maxRedirects);
+    attempt(url, 0);
   });
 }
 
-function isPdf(buf: Buffer): boolean {
-  return buf.slice(0, 4).toString('ascii') === '%PDF';
+const isPdf = (buf: Buffer) => buf.length > 4 && buf.slice(0, 4).toString() === '%PDF';
+
+function save(buf: Buffer, dir: string, tag: string): string {
+  const name = `${tag}-${uuidv4()}.pdf`;
+  fs.writeFileSync(path.join(dir, name), buf);
+  return `/api/pdfs/${name}`;
 }
 
-async function downloadPdfToFile(url: string, dest: string): Promise<boolean> {
+async function tryPdfUrl(url: string, dir: string, tag: string): Promise<string | null> {
   try {
-    const { body, contentType } = await fetchUrl(url, { maxSize: 50 * 1024 * 1024 });
-    if (!isPdf(body)) return false;
-    fs.writeFileSync(dest, body);
-    return true;
-  } catch {
-    return false;
-  }
+    const { body } = await get(url);
+    if (!isPdf(body)) return null;
+    return save(body, dir, tag);
+  } catch { return null; }
 }
 
-function savePdf(buf: Buffer, pdfDir: string, prefix: string): string {
-  const fname = `${prefix}-${uuidv4()}.pdf`;
-  fs.writeFileSync(path.join(pdfDir, fname), buf);
-  return `/api/pdfs/${fname}`;
-}
+// ─── Individual sources ───────────────────────────────────────────────────────
 
-// ─── Source 1: Unpaywall ─────────────────────────────────────────────────────
-
-async function tryUnpaywall(doi: string, pdfDir: string): Promise<FetchResult> {
+async function unpaywall(doi: string, dir: string): Promise<FetchResult> {
   if (!doi) return { found: false };
   try {
     const email = process.env.UNPAYWALL_EMAIL || 'researcher@example.com';
-    const { body } = await fetchUrl(`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${email}`);
-    const data = JSON.parse(body.toString());
-    const loc = data.best_oa_location;
-    const pdfUrl = loc?.url_for_pdf || loc?.url_for_landing_page;
+    const { body } = await get(`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${email}`, 8000);
+    const d = JSON.parse(body.toString());
+    const loc = d.best_oa_location;
+    const pdfUrl = loc?.url_for_pdf;
     if (!pdfUrl) return { found: false };
-    // Prefer direct PDF link
-    const target = loc?.url_for_pdf || pdfUrl;
-    const { body: pdfBuf } = await fetchUrl(target, { maxSize: 50 * 1024 * 1024 });
-    if (!isPdf(pdfBuf)) return { found: false };
-    const url = savePdf(pdfBuf, pdfDir, 'unpaywall');
-    return { found: true, url, source: 'Unpaywall' };
-  } catch { return { found: false }; }
-}
-
-// ─── Source 2: Europe PMC ────────────────────────────────────────────────────
-
-async function tryEuropePMC(article: any, pdfDir: string): Promise<FetchResult> {
-  try {
-    const query = article.pmid
-      ? `EXT_ID:${article.pmid} AND SRC:MED`
-      : `DOI:"${article.doi}"`;
-    const { body } = await fetchUrl(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(query)}&format=json&resultType=core&pageSize=1`);
-    const data = JSON.parse(body.toString());
-    const hit = data.resultList?.result?.[0];
-    if (!hit) return { found: false };
-
-    // Try PMC full-text PDF
-    if (hit.pmcid) {
-      const pmcUrl = `https://europepmc.org/articles/${hit.pmcid}?pdf=render`;
-      try {
-        const { body: pdfBuf } = await fetchUrl(pmcUrl, { maxSize: 50 * 1024 * 1024 });
-        if (isPdf(pdfBuf)) {
-          const url = savePdf(pdfBuf, pdfDir, 'europepmc');
-          return { found: true, url, source: 'Europe PMC' };
-        }
-      } catch {}
-
-      // Try direct PMC PDF download
-      const directUrl = `https://www.ncbi.nlm.nih.gov/pmc/articles/${hit.pmcid}/pdf/`;
-      try {
-        const { body: pdfBuf } = await fetchUrl(directUrl, { maxSize: 50 * 1024 * 1024 });
-        if (isPdf(pdfBuf)) {
-          const url = savePdf(pdfBuf, pdfDir, 'pmc');
-          return { found: true, url, source: 'PubMed Central' };
-        }
-      } catch {}
-    }
-    return { found: false };
-  } catch { return { found: false }; }
-}
-
-// ─── Source 3: Semantic Scholar ──────────────────────────────────────────────
-
-async function trySemanticScholar(article: any, pdfDir: string): Promise<FetchResult> {
-  try {
-    const query = article.doi
-      ? `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(article.doi)}?fields=openAccessPdf,title`
-      : `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(article.title || '')}&fields=openAccessPdf&limit=1`;
-
-    const { body } = await fetchUrl(query);
-    const data = JSON.parse(body.toString());
-    const pdfUrl = data.openAccessPdf?.url || data.data?.[0]?.openAccessPdf?.url;
-    if (!pdfUrl) return { found: false };
-
-    const { body: pdfBuf } = await fetchUrl(pdfUrl, { maxSize: 50 * 1024 * 1024 });
-    if (!isPdf(pdfBuf)) return { found: false };
-    const url = savePdf(pdfBuf, pdfDir, 'semanticscholar');
-    return { found: true, url, source: 'Semantic Scholar' };
-  } catch { return { found: false }; }
-}
-
-// ─── Source 4: Sci-Hub ───────────────────────────────────────────────────────
-
-const SCIHUB_MIRRORS = [
-  'https://sci-hub.se',
-  'https://sci-hub.st',
-  'https://sci-hub.ru',
-];
-
-async function tryScihub(article: any, pdfDir: string): Promise<FetchResult> {
-  const identifier = article.doi || article.pmid;
-  if (!identifier) return { found: false };
-
-  for (const mirror of SCIHUB_MIRRORS) {
-    try {
-      const pageUrl = `${mirror}/${encodeURIComponent(identifier)}`;
-      const { body: pageBody } = await fetchUrl(pageUrl);
-      const html = pageBody.toString();
-
-      // Extract PDF src from iframe or embed
-      const pdfMatch =
-        html.match(/(?:iframe|embed)[^>]+src=["']([^"']*\.pdf[^"']*)/i) ||
-        html.match(/(?:iframe|embed)[^>]+src=["'](\/\/[^"']+)/i) ||
-        html.match(/<iframe[^>]+src=["']([^"']+)["']/i) ||
-        html.match(/download\s*href=["']([^"']+\.pdf[^"']*)/i) ||
-        html.match(/location\.href\s*=\s*['"]([^'"]+\.pdf[^'"]*)/i) ||
-        html.match(/onclick="[^"]*location\.href='([^']+)'/i);
-
-      if (!pdfMatch?.[1]) continue;
-
-      let pdfUrl = pdfMatch[1];
-      // Handle protocol-relative URLs
-      if (pdfUrl.startsWith('//')) pdfUrl = 'https:' + pdfUrl;
-      // Handle relative URLs
-      if (pdfUrl.startsWith('/')) pdfUrl = mirror + pdfUrl;
-      // Clean up query params that block downloads
-      pdfUrl = pdfUrl.split('#')[0];
-
-      const { body: pdfBuf } = await fetchUrl(pdfUrl, { maxSize: 50 * 1024 * 1024 });
-      if (!isPdf(pdfBuf)) continue;
-
-      const url = savePdf(pdfBuf, pdfDir, 'scihub');
-      return { found: true, url, source: 'Sci-Hub' };
-    } catch { continue; }
-  }
+    const local = await tryPdfUrl(pdfUrl, dir, 'unpaywall');
+    if (local) return { found: true, url: local, source: 'Unpaywall' };
+  } catch {}
   return { found: false };
 }
 
-// ─── Source 5: Anna's Archive ────────────────────────────────────────────────
-
-async function tryAnnasArchive(article: any, pdfDir: string): Promise<FetchResult> {
-  const doi = article.doi;
-  if (!doi) return { found: false };
+async function europePmc(article: any, dir: string): Promise<FetchResult> {
   try {
-    // Search Anna's Archive for the DOI
-    const searchUrl = `https://annas-archive.org/search?index=&q=${encodeURIComponent(doi)}&ext=pdf&sort=&lang=en`;
-    const { body: searchBody } = await fetchUrl(searchUrl);
-    const html = searchBody.toString();
+    const q = article.pmid ? `EXT_ID:${article.pmid} AND SRC:MED` : `DOI:"${article.doi}"`;
+    const { body } = await get(`https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(q)}&format=json&resultType=core&pageSize=1`, 8000);
+    const hit = JSON.parse(body.toString()).resultList?.result?.[0];
+    if (!hit?.pmcid) return { found: false };
+    // Try multiple PMC URL patterns
+    for (const url of [
+      `https://www.ncbi.nlm.nih.gov/pmc/articles/${hit.pmcid}/pdf/`,
+      `https://europepmc.org/articles/${hit.pmcid}?pdf=render`,
+      `https://pmc.ncbi.nlm.nih.gov/articles/${hit.pmcid}/pdf/`,
+    ]) {
+      const local = await tryPdfUrl(url, dir, 'pmc');
+      if (local) return { found: true, url: local, source: 'PubMed Central' };
+    }
+  } catch {}
+  return { found: false };
+}
 
-    // Find first book/paper link
-    const mdMatch = html.match(/href="(\/md5\/[a-f0-9]+)"/i);
-    if (!mdMatch) return { found: false };
+async function semanticScholar(article: any, dir: string): Promise<FetchResult> {
+  try {
+    const endpoint = article.doi
+      ? `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(article.doi)}?fields=openAccessPdf`
+      : `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(article.title || '')}&fields=openAccessPdf&limit=1`;
+    const { body } = await get(endpoint, 8000);
+    const d = JSON.parse(body.toString());
+    const pdfUrl = d.openAccessPdf?.url || d.data?.[0]?.openAccessPdf?.url;
+    if (!pdfUrl) return { found: false };
+    const local = await tryPdfUrl(pdfUrl, dir, 'ss');
+    if (local) return { found: true, url: local, source: 'Semantic Scholar' };
+  } catch {}
+  return { found: false };
+}
 
-    const detailUrl = `https://annas-archive.org${mdMatch[1]}`;
-    const { body: detailBody } = await fetchUrl(detailUrl);
-    const detailHtml = detailBody.toString();
+async function arxiv(article: any, dir: string): Promise<FetchResult> {
+  if (!article.doi && !article.title) return { found: false };
+  try {
+    // Check if DOI points to arXiv
+    const doi = article.doi || '';
+    if (doi.includes('arxiv') || doi.includes('10.48550')) {
+      const arxivId = doi.split('arxiv.')[1] || doi.split('/').pop();
+      if (arxivId) {
+        const local = await tryPdfUrl(`https://arxiv.org/pdf/${arxivId}`, dir, 'arxiv');
+        if (local) return { found: true, url: local, source: 'arXiv' };
+      }
+    }
+    // Search by title
+    const q = encodeURIComponent((article.title || '').slice(0, 100));
+    const { body } = await get(`https://export.arxiv.org/api/query?search_query=ti:${q}&max_results=1`, 8000);
+    const xml = body.toString();
+    const idMatch = xml.match(/<id>https?:\/\/arxiv\.org\/abs\/([^<]+)<\/id>/);
+    if (!idMatch) return { found: false };
+    const local = await tryPdfUrl(`https://arxiv.org/pdf/${idMatch[1]}`, dir, 'arxiv');
+    if (local) return { found: true, url: local, source: 'arXiv' };
+  } catch {}
+  return { found: false };
+}
 
-    // Find a direct download link
-    const dlMatch =
-      detailHtml.match(/href="(https?:\/\/[^"]+\.pdf[^"]*)"/i) ||
-      detailHtml.match(/href="(\/fast_download\/[^"]+)"/i) ||
-      detailHtml.match(/href="(\/slow_download\/[^"]+)"/i);
+async function biorxiv(article: any, dir: string): Promise<FetchResult> {
+  if (!article.doi) return { found: false };
+  try {
+    // bioRxiv/medRxiv DOIs start with 10.1101
+    if (!article.doi.startsWith('10.1101')) return { found: false };
+    const local = await tryPdfUrl(`https://www.biorxiv.org/content/${article.doi}.full.pdf`, dir, 'biorxiv');
+    if (local) return { found: true, url: local, source: 'bioRxiv' };
+    const local2 = await tryPdfUrl(`https://www.medrxiv.org/content/${article.doi}.full.pdf`, dir, 'medrxiv');
+    if (local2) return { found: true, url: local2, source: 'medRxiv' };
+  } catch {}
+  return { found: false };
+}
 
-    if (!dlMatch) return { found: false };
+async function coreAc(article: any, dir: string): Promise<FetchResult> {
+  try {
+    const q = article.doi
+      ? `doi:"${article.doi}"`
+      : `title:"${(article.title || '').slice(0, 80)}"`;
+    const { body } = await get(`https://api.core.ac.uk/v3/search/works?q=${encodeURIComponent(q)}&limit=1&fields=downloadUrl,fullTextIdentifier`, 8000);
+    const d = JSON.parse(body.toString());
+    const hit = d.results?.[0];
+    const pdfUrl = hit?.downloadUrl || hit?.fullTextIdentifier;
+    if (!pdfUrl) return { found: false };
+    const local = await tryPdfUrl(pdfUrl, dir, 'core');
+    if (local) return { found: true, url: local, source: 'CORE' };
+  } catch {}
+  return { found: false };
+}
 
-    let dlUrl = dlMatch[1];
-    if (dlUrl.startsWith('/')) dlUrl = 'https://annas-archive.org' + dlUrl;
+// Sci-Hub: try all mirrors in parallel, first valid PDF wins
+async function scihub(article: any, dir: string): Promise<FetchResult> {
+  const id = article.doi || article.pmid;
+  if (!id) return { found: false };
+  const mirrors = ['https://sci-hub.se', 'https://sci-hub.st', 'https://sci-hub.ru', 'https://sci-hub.mksa.top'];
 
-    const { body: pdfBuf } = await fetchUrl(dlUrl, { maxSize: 50 * 1024 * 1024 });
-    if (!isPdf(pdfBuf)) return { found: false };
+  const tryMirror = async (base: string): Promise<FetchResult> => {
+    try {
+      const { body: html } = await get(`${base}/${encodeURIComponent(id)}`, 12000);
+      const text = html.toString();
+      // Multiple regex patterns to catch different Sci-Hub layouts
+      const patterns = [
+        /(?:src|href)=["']([^"']+\.pdf[^"'?#]*)/gi,
+        /<iframe[^>]+src=["']([^"']+)["']/gi,
+        /<embed[^>]+src=["']([^"']+)["']/gi,
+        /location\.href\s*=\s*["']([^"']+\.pdf[^"']*)/gi,
+        /download\s*=\s*["'][^"']*["'][^>]+href=["']([^"']+)/gi,
+      ];
+      let pdfUrl: string | null = null;
+      for (const pat of patterns) {
+        const m = pat.exec(text);
+        if (m?.[1]) { pdfUrl = m[1]; break; }
+      }
+      if (!pdfUrl) return { found: false };
+      if (pdfUrl.startsWith('//')) pdfUrl = 'https:' + pdfUrl;
+      if (pdfUrl.startsWith('/')) pdfUrl = base + pdfUrl;
+      const local = await tryPdfUrl(pdfUrl, dir, 'scihub');
+      if (local) return { found: true, url: local, source: 'Sci-Hub' };
+    } catch {}
+    return { found: false };
+  };
 
-    const url = savePdf(pdfBuf, pdfDir, 'annas');
-    return { found: true, url, source: "Anna's Archive" };
+  // Race all mirrors in parallel
+  try {
+    const result = await Promise.any(
+      mirrors.map(m => tryMirror(m).then(r => r.found ? r : Promise.reject('not found')))
+    );
+    return result;
   } catch { return { found: false }; }
 }
 
-// ─── Main orchestrator ────────────────────────────────────────────────────────
+async function annasArchive(article: any, dir: string): Promise<FetchResult> {
+  const doi = article.doi;
+  if (!doi) return { found: false };
+  try {
+    const { body: searchHtml } = await get(
+      `https://annas-archive.org/search?index=&q=${encodeURIComponent(doi)}&ext=pdf&sort=&lang=en`, 10000
+    );
+    const html = searchHtml.toString();
+    const mdMatch = html.match(/href="(\/md5\/[a-f0-9]+)"/i);
+    if (!mdMatch) return { found: false };
+    const { body: detailHtml } = await get(`https://annas-archive.org${mdMatch[1]}`, 10000);
+    const detail = detailHtml.toString();
+    const dlMatch =
+      detail.match(/href="(https?:\/\/[^"]+\.pdf[^"]*)"/i) ||
+      detail.match(/href="(\/fast_download\/[^"]+)"/i) ||
+      detail.match(/href="(\/slow_download\/[^"]+)"/i);
+    if (!dlMatch) return { found: false };
+    let dlUrl = dlMatch[1];
+    if (dlUrl.startsWith('/')) dlUrl = 'https://annas-archive.org' + dlUrl;
+    const local = await tryPdfUrl(dlUrl, dir, 'annas');
+    if (local) return { found: true, url: local, source: "Anna's Archive" };
+  } catch {}
+  return { found: false };
+}
+
+// ─── Main: race all sources in parallel ──────────────────────────────────────
 
 export async function fetchFullText(article: any, pdfDir: string): Promise<FetchResult> {
-  const sources = [
-    () => tryUnpaywall(article.doi, pdfDir),
-    () => tryEuropePMC(article, pdfDir),
-    () => trySemanticScholar(article, pdfDir),
-    () => tryScihub(article, pdfDir),
-    () => tryAnnasArchive(article, pdfDir),
+  // Group 1: Fast open-access sources (run together first)
+  const oaSources = [
+    unpaywall(article.doi, pdfDir),
+    europePmc(article, pdfDir),
+    semanticScholar(article, pdfDir),
+    arxiv(article, pdfDir),
+    biorxiv(article, pdfDir),
+    coreAc(article, pdfDir),
   ];
 
-  for (const trySource of sources) {
-    const result = await trySource();
-    if (result.found) return result;
+  // Try OA sources first (race — first found wins)
+  try {
+    const result = await Promise.any(
+      oaSources.map(p => p.then(r => r.found ? r : Promise.reject('not found')))
+    );
+    return result;
+  } catch {
+    // All OA failed — fall back to Sci-Hub + Anna's Archive in parallel
+    try {
+      const result = await Promise.any([
+        scihub(article, pdfDir).then(r => r.found ? r : Promise.reject('not found')),
+        annasArchive(article, pdfDir).then(r => r.found ? r : Promise.reject('not found')),
+      ]);
+      return result;
+    } catch {
+      return { found: false, message: 'Not found on any source (Unpaywall, PMC, Semantic Scholar, arXiv, bioRxiv, CORE, Sci-Hub, Anna\'s Archive)' };
+    }
   }
-
-  return { found: false, message: 'Not found on Unpaywall, Europe PMC, Semantic Scholar, Sci-Hub, or Anna\'s Archive' };
 }

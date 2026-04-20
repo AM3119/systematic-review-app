@@ -50,7 +50,7 @@ export const reviewsApi = {
 
 // Articles
 export const articlesApi = {
-  list: (reviewId: string, params?: any) => api.get(`/reviews/${reviewId}/articles`, { params }),
+  list: (reviewId: string, params?: any) => api.get(`/reviews/${reviewId}/articles`, { params: params || {} }),
   create: (reviewId: string, data: any) => api.post(`/reviews/${reviewId}/articles`, data),
   get: (reviewId: string, articleId: string) => api.get(`/reviews/${reviewId}/articles/${articleId}`),
   update: (reviewId: string, articleId: string, data: any) => api.put(`/reviews/${reviewId}/articles/${articleId}`, data),

@@ -42,9 +42,10 @@ function highlightText(text: string, keywords: string[]): React.ReactNode {
 interface ScreeningInterfaceProps {
   reviewId: string;
   phase: 'abstract' | 'fulltext';
+  requireAbstract?: string; // e.g. 'include' or 'include,maybe'
 }
 
-export default function ScreeningInterface({ reviewId, phase }: ScreeningInterfaceProps) {
+export default function ScreeningInterface({ reviewId, phase, requireAbstract }: ScreeningInterfaceProps) {
   const user = useAuthStore(s => s.user);
   const qc = useQueryClient();
 
@@ -76,11 +77,12 @@ export default function ScreeningInterface({ reviewId, phase }: ScreeningInterfa
   ];
 
   const { data: articlesData, refetch } = useQuery(
-    ['articles', reviewId, phase, filter, search],
+    ['articles', reviewId, phase, filter, search, requireAbstract],
     () => articlesApi.list(reviewId, {
       phase,
       decision: filter === 'all' ? undefined : filter,
       search: search || undefined,
+      require_abstract: requireAbstract || undefined,
       limit: 500,
     }).then(r => r.data),
     { enabled: !!reviewId, keepPreviousData: true }
@@ -155,7 +157,7 @@ export default function ScreeningInterface({ reviewId, phase }: ScreeningInterfa
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (bulkMode) return;
       if (e.key === 'i' || e.key === 'I') decide('include');
-      if (e.key === 'e' || e.key === 'E') setShowReasonModal(true);
+      if (e.key === 'e' || e.key === 'E') { if (phase === 'fulltext') setShowReasonModal(true); else decide('exclude'); }
       if (e.key === 'm' || e.key === 'M') decide('maybe');
       if (e.key === 'ArrowRight') setCurrentIndex(i => Math.min(i + 1, articles.length - 1));
       if (e.key === 'ArrowLeft') setCurrentIndex(i => Math.max(i - 1, 0));
@@ -413,7 +415,7 @@ export default function ScreeningInterface({ reviewId, phase }: ScreeningInterfa
                 {[
                   { decision: 'include' as const, icon: CheckIcon, label: 'Include', key: 'I', activeClass: 'border-emerald-500 bg-emerald-500 text-white shadow-lg shadow-emerald-100 dark:shadow-emerald-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-emerald-600 dark:text-emerald-400 hover:border-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20', onClick: () => decide('include') },
                   { decision: 'maybe' as const, icon: QuestionMarkCircleIcon, label: 'Maybe', key: 'M', activeClass: 'border-amber-500 bg-amber-500 text-white shadow-lg shadow-amber-100 dark:shadow-amber-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-amber-600 dark:text-amber-400 hover:border-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20', onClick: () => decide('maybe') },
-                  { decision: 'exclude' as const, icon: XMarkIcon, label: 'Exclude', key: 'E', activeClass: 'border-red-500 bg-red-500 text-white shadow-lg shadow-red-100 dark:shadow-red-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-900/20', onClick: () => setShowReasonModal(true) },
+                  { decision: 'exclude' as const, icon: XMarkIcon, label: 'Exclude', key: 'E', activeClass: 'border-red-500 bg-red-500 text-white shadow-lg shadow-red-100 dark:shadow-red-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-900/20', onClick: () => phase === 'fulltext' ? setShowReasonModal(true) : decide('exclude') },
                 ].map(({ decision, icon: Icon, label, key, activeClass, inactiveClass, onClick }) => (
                   <button key={decision} onClick={onClick}
                     className={`flex-1 max-w-36 flex flex-col items-center gap-2 py-4 rounded-xl border-2 transition-all duration-150 font-semibold ${current.my_decision === decision ? activeClass : inactiveClass}`}>

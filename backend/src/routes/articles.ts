@@ -30,7 +30,7 @@ router.get('/:reviewId/articles', authMiddleware, (req: AuthRequest, res: Respon
   const access = reviewAccess(req.params.reviewId, req.user!.id);
   if (!access) return res.status(403).json({ error: 'Access denied' });
 
-  const { phase = 'abstract', decision, search, tag, duplicate, limit = 50, offset = 0 } = req.query;
+  const { phase = 'abstract', decision, search, tag, duplicate, require_abstract, limit = 50, offset = 0 } = req.query;
   const uid = req.user!.id;
   const rid = req.params.reviewId;
 
@@ -55,6 +55,14 @@ router.get('/:reviewId/articles', authMiddleware, (req: AuthRequest, res: Respon
   if (tag) {
     conditions.push('EXISTS (SELECT 1 FROM article_tags at WHERE at.article_id = a.id AND at.tag_id = ?)');
     whereParams.push(tag);
+  }
+
+  // require_abstract: filter to articles where user's abstract decision is in this comma-list
+  if (require_abstract) {
+    const decisions = (require_abstract as string).split(',').map(d => d.trim()).filter(Boolean);
+    const ph = decisions.map(() => '?').join(',');
+    conditions.push(`EXISTS (SELECT 1 FROM screening_decisions sd WHERE sd.article_id = a.id AND sd.user_id = ? AND sd.phase = 'abstract' AND sd.decision IN (${ph}))`);
+    whereParams.push(uid, ...decisions);
   }
 
   if (search) {

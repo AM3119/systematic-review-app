@@ -100,7 +100,8 @@ function ExtractionForm({ reviewId, article, fields, onBack }: { reviewId: strin
       const map: Record<string, string> = {};
       for (const d of freshData.data) map[d.field_id] = d.value;
       setValues(map);
-      toast.success(`🤖 AI extracted ${data.fields_populated} fields using ${data.model || 'local model'}`);
+      const src = data.content_source === 'FULL TEXT (from PDF)' ? '📄 full-text PDF' : '📝 abstract';
+      toast.success(`🤖 AI extracted ${data.fields_populated} fields from ${src}`);
       qc.invalidateQueries(['extraction-data', reviewId, article.id]);
     } catch (err: any) {
       const msg = err.response?.data?.message || err.response?.data?.error || 'AI extraction failed';

@@ -6,6 +6,15 @@ import { articlesApi } from '../../api/client';
 import ScreeningInterface from '../../components/screening/ScreeningInterface';
 import { SparklesIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
+// Which abstract-screened articles are eligible for full-text
+type InclusionFilter = 'include' | 'include,maybe' | 'include,maybe,exclude';
+
+const FILTER_OPTIONS: { value: InclusionFilter; label: string; desc: string }[] = [
+  { value: 'include', label: 'Included only', desc: 'Articles marked Include at abstract screening' },
+  { value: 'include,maybe', label: 'Included + Maybe', desc: 'Include and Maybe decisions from abstract' },
+  { value: 'include,maybe,exclude', label: 'All screened', desc: 'Every article screened at abstract stage' },
+];
+
 function PdfViewer({ url, title, onClose }: { url: string; title: string; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex flex-col">
@@ -25,17 +34,20 @@ function PdfViewer({ url, title, onClose }: { url: string; title: string; onClos
   );
 }
 
-function FullTextManager({ reviewId }: { reviewId: string }) {
+function FullTextManager({ reviewId, inclusionFilter }: { reviewId: string; inclusionFilter: InclusionFilter }) {
   const qc = useQueryClient();
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [fetching, setFetching] = useState<string | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
   const [batchFetching, setBatchFetching] = useState(false);
   const [viewingPdf, setViewingPdf] = useState<{ url: string; title: string } | null>(null);
 
   const { data: articlesData, refetch } = useQuery(
-    ['abstract-included', reviewId],
-    () => articlesApi.list(reviewId, { phase: 'abstract', decision: 'include', limit: 500 }).then(r => r.data),
+    ['abstract-included', reviewId, inclusionFilter],
+    () => articlesApi.list(reviewId, {
+      phase: 'abstract',
+      require_abstract: inclusionFilter,
+      limit: 500,
+    }).then(r => r.data),
     { enabled: !!reviewId }
   );
 
@@ -65,12 +77,14 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
     const missing = articles.filter((a: any) => !a.full_text_url);
     if (!missing.length) return toast('All articles already have full texts');
     setBatchFetching(true);
+    // Fetch in parallel batches of 3
     let found = 0;
-    for (const a of missing) {
-      try {
-        const { data } = await articlesApi.fetchFullText(reviewId, a.id);
-        if (data.found) found++;
-      } catch {}
+    for (let i = 0; i < missing.length; i += 3) {
+      const batch = missing.slice(i, i + 3);
+      const results = await Promise.allSettled(
+        batch.map((a: any) => articlesApi.fetchFullText(reviewId, a.id).then(r => r.data))
+      );
+      found += results.filter(r => r.status === 'fulfilled' && (r.value as any).found).length;
     }
     toast.success(`Batch complete: ${found}/${missing.length} retrieved`);
     refetch();
@@ -92,13 +106,14 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-gray-50 dark:bg-gray-950">
       {viewingPdf && <PdfViewer url={viewingPdf.url} title={viewingPdf.title} onClose={() => setViewingPdf(null)} />}
+
       {/* Header */}
       <div className="card p-5 mb-6">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">Full-Text Management</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-              Auto-retrieve open-access PDFs or upload manually
+              Auto-retrieve PDFs from Unpaywall, PMC, Semantic Scholar, arXiv, CORE, Sci-Hub, Anna's Archive
             </p>
           </div>
           <button onClick={handleBatchFetch} disabled={batchFetching || !withoutPdf}
@@ -131,8 +146,8 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
 
         <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
           <p className="text-xs text-blue-700 dark:text-blue-400">
-            <strong>Sources checked in order:</strong> Unpaywall, Europe PMC/PMC, Semantic Scholar, Sci-Hub, Anna's Archive.
-            PDFs are downloaded and stored locally. Click <strong>View</strong> to read inline, or <strong>↓</strong> to save locally.
+            <strong>Sources tried in parallel:</strong> Unpaywall, Europe PMC/PMC, Semantic Scholar, arXiv, bioRxiv/medRxiv, CORE, Sci-Hub (3 mirrors), Anna's Archive.
+            All PDFs verified and stored locally. Click <strong>View</strong> to read inline.
           </p>
         </div>
       </div>
@@ -148,6 +163,10 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                   {article.authors?.split(';')[0]?.trim()} · {article.journal} · {article.year}
                   {article.doi && <span className="ml-2 font-mono">DOI: {article.doi}</span>}
+                  <span className={`ml-2 font-medium ${
+                    article.my_decision === 'include' ? 'text-emerald-600' :
+                    article.my_decision === 'maybe' ? 'text-amber-600' : 'text-gray-400'
+                  }`}>({article.my_decision || 'unscreened'})</span>
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -190,7 +209,7 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
         ))}
         {articles.length === 0 && (
           <div className="card p-12 text-center">
-            <p className="text-gray-400">No articles included from abstract screening yet</p>
+            <p className="text-gray-400">No articles match the current inclusion filter</p>
           </div>
         )}
       </div>
@@ -201,29 +220,50 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
 export default function FulltextScreening() {
   const { reviewId } = useParams<{ reviewId: string }>();
   const [tab, setTab] = useState<'manage' | 'screen'>('manage');
+  const [inclusionFilter, setInclusionFilter] = useState<InclusionFilter>('include');
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Tab bar */}
-      <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-6 flex gap-4">
-        {[
-          { id: 'manage', label: '📄 Full-Text Management' },
-          { id: 'screen', label: '🔍 Screen Articles' },
-        ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id as any)}
-            className={`py-3 text-sm font-medium border-b-2 transition-colors ${
-              tab === t.id
-                ? 'border-brand-600 text-brand-700 dark:text-brand-300'
-                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-            }`}>
-            {t.label}
-          </button>
-        ))}
+      {/* Tab bar + inclusion filter */}
+      <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-6 flex items-center justify-between">
+        <div className="flex gap-4">
+          {[
+            { id: 'manage', label: '📄 Full-Text Management' },
+            { id: 'screen', label: '🔍 Screen Articles' },
+          ].map(t => (
+            <button key={t.id} onClick={() => setTab(t.id as any)}
+              className={`py-3 text-sm font-medium border-b-2 transition-colors ${
+                tab === t.id
+                  ? 'border-brand-600 text-brand-700 dark:text-brand-300'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+              }`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Inclusion filter selector */}
+        <div className="flex items-center gap-2 py-2">
+          <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">Show articles:</span>
+          <div className="flex gap-1">
+            {FILTER_OPTIONS.map(opt => (
+              <button key={opt.value} onClick={() => setInclusionFilter(opt.value)}
+                title={opt.desc}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors font-medium ${
+                  inclusionFilter === opt.value
+                    ? 'bg-brand-600 text-white border-brand-600'
+                    : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-brand-400'
+                }`}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {tab === 'manage'
-        ? <FullTextManager reviewId={reviewId!} />
-        : <ScreeningInterface reviewId={reviewId!} phase="fulltext" />
+        ? <FullTextManager reviewId={reviewId!} inclusionFilter={inclusionFilter} />
+        : <ScreeningInterface reviewId={reviewId!} phase="fulltext" requireAbstract={inclusionFilter} />
       }
     </div>
   );
