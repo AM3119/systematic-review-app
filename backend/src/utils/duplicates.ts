@@ -65,45 +65,65 @@ export interface DuplicatePair {
   matchReason: string;
 }
 
+// Pre-compute word sets for all articles once (avoids O(n²) re-splitting)
+function buildIndex(articles: Article[]) {
+  return articles.map(a => ({
+    ...a,
+    titleWords: new Set(normalizeText(a.title || '').split(/\s+/).filter(w => w.length > 2)),
+    abstractWords: new Set((a.abstract || '').slice(0, 400).toLowerCase().split(/\s+/).filter(w => w.length > 3)),
+    titleNorm: normalizeText(a.title || ''),
+    doiNorm: (a.doi || '').toLowerCase().trim(),
+    pmidNorm: (a.pmid || '').trim(),
+  }));
+}
+
+function fastJaccardSets(setA: Set<string>, setB: Set<string>): number {
+  if (setA.size === 0 && setB.size === 0) return 0;
+  let intersection = 0;
+  const smaller = setA.size <= setB.size ? setA : setB;
+  const larger = setA.size <= setB.size ? setB : setA;
+  for (const w of smaller) { if (larger.has(w)) intersection++; }
+  return intersection / (setA.size + setB.size - intersection);
+}
+
 export function detectDuplicates(articles: Article[], threshold = 0.85): DuplicatePair[] {
   const pairs: DuplicatePair[] = [];
+  const indexed = buildIndex(articles);
+  // How much title Jaccard alone can contribute to the final score (title 70% weight)
+  // If max possible final score < threshold, skip expensive Levenshtein
+  const minJaccardToCheck = threshold / 1.06 - 0.30; // rough lower bound
 
-  for (let i = 0; i < articles.length; i++) {
-    for (let j = i + 1; j < articles.length; j++) {
-      const a = articles[i];
-      const b = articles[j];
-      let similarity = 0;
-      let titleSim = 0;
-      let abstractSim = 0;
-      let reason = '';
+  for (let i = 0; i < indexed.length; i++) {
+    const a = indexed[i];
+    for (let j = i + 1; j < indexed.length; j++) {
+      const b = indexed[j];
 
       // Exact DOI match → 100%
-      if (a.doi && b.doi && a.doi.trim() && b.doi.trim() &&
-          a.doi.toLowerCase().trim() === b.doi.toLowerCase().trim()) {
+      if (a.doiNorm && b.doiNorm && a.doiNorm === b.doiNorm) {
         pairs.push({ article1Id: a.id, article2Id: b.id, similarity: 1.0, titleSim: 1.0, abstractSim: 0, matchReason: 'Exact DOI match' });
         continue;
       }
-
       // Exact PMID match → 100%
-      if (a.pmid && b.pmid && a.pmid.trim() && b.pmid.trim() &&
-          a.pmid.trim() === b.pmid.trim()) {
+      if (a.pmidNorm && b.pmidNorm && a.pmidNorm === b.pmidNorm) {
         pairs.push({ article1Id: a.id, article2Id: b.id, similarity: 1.0, titleSim: 1.0, abstractSim: 0, matchReason: 'Exact PMID match' });
         continue;
       }
 
-      // Title similarity (60% weight Levenshtein + 40% Jaccard)
-      const lev = titleSimilarity(a.title, b.title);
-      const jac = jaccardSimilarity(a.title, b.title);
-      titleSim = lev * 0.6 + jac * 0.4;
+      // Fast Jaccard pre-filter — skip pairs that can't possibly meet threshold
+      const jac = fastJaccardSets(a.titleWords, b.titleWords);
+      if (jac < minJaccardToCheck) continue;
 
-      // Abstract similarity (Jaccard on word sets)
-      abstractSim = abstractSimilarity(a.abstract || '', b.abstract || '');
+      // Full title similarity
+      const lev = titleSimilarity(a.titleNorm, b.titleNorm);
+      const titleSim = lev * 0.6 + jac * 0.4;
 
-      // Combined score: title 70% + abstract 30%
-      similarity = titleSim * 0.70 + abstractSim * 0.30;
+      // Abstract similarity
+      const abstractSim = fastJaccardSets(a.abstractWords, b.abstractWords);
 
-      const reasons: string[] = [];
-      reasons.push(`Title: ${Math.round(titleSim * 100)}%`);
+      // Combined score
+      let similarity = titleSim * 0.70 + abstractSim * 0.30;
+
+      const reasons: string[] = [`Title: ${Math.round(titleSim * 100)}%`];
       if (a.abstract && b.abstract) reasons.push(`Abstract: ${Math.round(abstractSim * 100)}%`);
 
       // Boosters
@@ -111,14 +131,16 @@ export function detectDuplicates(articles: Article[], threshold = 0.85): Duplica
         similarity = Math.min(1.0, similarity + 0.03);
         reasons.push('same year');
       }
-      if (a.journal && b.journal && jaccardSimilarity(a.journal, b.journal) > 0.7) {
+      if (a.journal && b.journal && fastJaccardSets(
+        new Set(a.journal.toLowerCase().split(/\s+/)),
+        new Set(b.journal.toLowerCase().split(/\s+/))
+      ) > 0.7) {
         similarity = Math.min(1.0, similarity + 0.03);
         reasons.push('same journal');
       }
 
       if (similarity >= threshold) {
-        reason = reasons.join(', ');
-        pairs.push({ article1Id: a.id, article2Id: b.id, similarity, titleSim, abstractSim, matchReason: reason });
+        pairs.push({ article1Id: a.id, article2Id: b.id, similarity, titleSim, abstractSim, matchReason: reasons.join(', ') });
       }
     }
   }

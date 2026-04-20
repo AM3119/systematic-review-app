@@ -16,11 +16,12 @@ router.get('/', authMiddleware, (req: AuthRequest, res: Response) => {
   const reviews = db.prepare(`
     SELECT r.*, u.name as owner_name, u.avatar_color as owner_color,
       (SELECT COUNT(*) FROM review_members WHERE review_id = r.id) as member_count,
-      (SELECT COUNT(*) FROM articles WHERE review_id = r.id AND duplicate_group_id IS NULL OR is_duplicate_primary = 1) as article_count,
+      (SELECT COUNT(*) FROM articles WHERE review_id = r.id AND is_duplicate_primary = 1) as article_count,
       rm.role as my_role
     FROM reviews r
     JOIN users u ON r.owner_id = u.id
     JOIN review_members rm ON rm.review_id = r.id AND rm.user_id = ?
+    GROUP BY r.id
     ORDER BY r.created_at DESC
   `).all(req.user!.id);
   res.json(reviews);

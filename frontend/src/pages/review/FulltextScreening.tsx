@@ -1,10 +1,29 @@
 import { useParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useQueryClient } from 'react-query';
 import { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { articlesApi, screeningApi } from '../../api/client';
+import { articlesApi } from '../../api/client';
 import ScreeningInterface from '../../components/screening/ScreeningInterface';
-import { SparklesIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { SparklesIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
+
+function PdfViewer({ url, title, onClose }: { url: string; title: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex flex-col">
+      <div className="bg-white dark:bg-gray-900 flex items-center justify-between px-4 py-2 flex-shrink-0 border-b border-gray-200 dark:border-gray-700">
+        <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate max-w-2xl">{title}</p>
+        <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+          <a href={url} download className="btn-secondary text-xs py-1 px-2">
+            <ArrowDownTrayIcon className="w-3.5 h-3.5" /> Download
+          </a>
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg">
+            <XMarkIcon className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+      </div>
+      <iframe src={url} className="flex-1 w-full bg-gray-100" title={title} />
+    </div>
+  );
+}
 
 function FullTextManager({ reviewId }: { reviewId: string }) {
   const qc = useQueryClient();
@@ -12,6 +31,7 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
   const [fetching, setFetching] = useState<string | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
   const [batchFetching, setBatchFetching] = useState(false);
+  const [viewingPdf, setViewingPdf] = useState<{ url: string; title: string } | null>(null);
 
   const { data: articlesData, refetch } = useQuery(
     ['abstract-included', reviewId],
@@ -71,6 +91,7 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
 
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-gray-50 dark:bg-gray-950">
+      {viewingPdf && <PdfViewer url={viewingPdf.url} title={viewingPdf.title} onClose={() => setViewingPdf(null)} />}
       {/* Header */}
       <div className="card p-5 mb-6">
         <div className="flex items-center justify-between mb-4">
@@ -110,8 +131,8 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
 
         <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800">
           <p className="text-xs text-blue-700 dark:text-blue-400">
-            <strong>Sources checked:</strong> Unpaywall (OA), Europe PMC, PubMed Central, Semantic Scholar.
-            Only open-access PDFs are retrieved automatically. For paywalled articles, upload the PDF manually.
+            <strong>Sources checked in order:</strong> Unpaywall, Europe PMC/PMC, Semantic Scholar, Sci-Hub, Anna's Archive.
+            PDFs are downloaded and stored locally. Click <strong>View</strong> to read inline, or <strong>↓</strong> to save locally.
           </p>
         </div>
       </div>
@@ -132,16 +153,16 @@ function FullTextManager({ reviewId }: { reviewId: string }) {
               <div className="flex items-center gap-2 flex-shrink-0">
                 {article.full_text_url ? (
                   <>
-                    <a href={article.full_text_url} target="_blank" rel="noopener noreferrer"
+                    <button onClick={() => setViewingPdf({ url: article.full_text_url, title: article.title })}
                       className="btn-secondary text-xs py-1 px-2">
                       📄 View
-                    </a>
+                    </button>
                     <a href={article.full_text_url} download
                       className="btn-secondary text-xs py-1 px-2">
                       <ArrowDownTrayIcon className="w-3.5 h-3.5" />
                     </a>
                     <button onClick={() => handleFetch(article.id)} disabled={fetching === article.id}
-                      className="btn-secondary text-xs py-1 px-2 text-gray-400">
+                      className="btn-secondary text-xs py-1 px-2 text-gray-400" title="Re-fetch">
                       {fetching === article.id ? '...' : '↺'}
                     </button>
                   </>

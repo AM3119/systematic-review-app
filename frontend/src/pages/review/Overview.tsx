@@ -6,7 +6,7 @@ import { reviewsApi, articlesApi } from '../../api/client';
 import ProgressBar from '../../components/common/ProgressBar';
 import Avatar from '../../components/common/Avatar';
 import {
-  ArrowUpTrayIcon, SparklesIcon, DocumentDuplicateIcon,
+  ArrowUpTrayIcon, DocumentDuplicateIcon,
   CheckCircleIcon, XCircleIcon, QuestionMarkCircleIcon, ClockIcon
 } from '@heroicons/react/24/outline';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
@@ -14,7 +14,6 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis
 export default function ReviewOverview() {
   const { reviewId } = useParams<{ reviewId: string }>();
   const [importing, setImporting] = useState(false);
-  const [detecting, setDetecting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: stats, refetch: refetchStats } = useQuery(
@@ -39,19 +38,6 @@ export default function ReviewOverview() {
     }
   };
 
-  const handleDetectDuplicates = async () => {
-    setDetecting(true);
-    try {
-      const { data } = await articlesApi.detectDuplicates(reviewId!);
-      toast.success(`Found ${data.duplicates_found} duplicates in ${data.groups} groups`);
-      refetchStats();
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Detection failed');
-    } finally {
-      setDetecting(false);
-    }
-  };
-
   const abstractPieData = [
     { name: 'Include', value: stats?.included_abstract || 0, color: '#10B981' },
     { name: 'Exclude', value: stats?.excluded_abstract || 0, color: '#EF4444' },
@@ -68,10 +54,6 @@ export default function ReviewOverview() {
           {importing ? 'Importing...' : 'Import Articles'}
           <input ref={fileRef} type="file" accept=".ris,.bib,.csv" className="hidden" onChange={handleImport} />
         </label>
-        <button onClick={handleDetectDuplicates} disabled={detecting} className="btn-secondary">
-          <SparklesIcon className="w-4 h-4 text-brand-500" />
-          {detecting ? 'Detecting...' : 'AI Detect Duplicates'}
-        </button>
       </div>
 
       {/* Main stats */}
