@@ -60,13 +60,18 @@ export const articlesApi = {
     fd.append('file', file);
     return api.post(`/reviews/${reviewId}/articles/import`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
   },
-  detectDuplicates: (reviewId: string) => api.post(`/reviews/${reviewId}/articles/detect-duplicates`),
+  detectDuplicates: (reviewId: string, threshold?: number) => api.post(`/reviews/${reviewId}/articles/detect-duplicates`, { threshold }),
   duplicateGroups: (reviewId: string) => api.get(`/reviews/${reviewId}/duplicate-groups`),
   setDuplicate: (reviewId: string, articleId: string, data: any) => api.put(`/reviews/${reviewId}/articles/${articleId}/duplicate`, data),
   tags: (reviewId: string) => api.get(`/reviews/${reviewId}/tags`),
   createTag: (reviewId: string, data: any) => api.post(`/reviews/${reviewId}/tags`, data),
   addTag: (reviewId: string, articleId: string, tagId: string) => api.post(`/reviews/${reviewId}/articles/${articleId}/tags`, { tag_id: tagId }),
   removeTag: (reviewId: string, articleId: string, tagId: string) => api.delete(`/reviews/${reviewId}/articles/${articleId}/tags/${tagId}`),
+  fetchFullText: (reviewId: string, articleId: string) => api.post(`/reviews/${reviewId}/articles/${articleId}/fetch-fulltext`),
+  uploadPdf: (reviewId: string, articleId: string, file: File) => {
+    const fd = new FormData(); fd.append('pdf', file);
+    return api.post(`/reviews/${reviewId}/articles/${articleId}/upload-pdf`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
 };
 
 // Screening
@@ -88,4 +93,5 @@ export const extractionApi = {
   saveField: (reviewId: string, articleId: string, data: any) => api.post(`/reviews/${reviewId}/extraction/${articleId}`, data),
   saveBulk: (reviewId: string, articleId: string, fields: any[]) => api.post(`/reviews/${reviewId}/extraction/${articleId}/bulk`, { fields }),
   summary: (reviewId: string) => api.get(`/reviews/${reviewId}/extraction/summary`),
+  aiExtract: (reviewId: string, articleId: string) => api.post(`/reviews/${reviewId}/extraction/${articleId}/ai-extract`),
 };

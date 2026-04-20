@@ -108,6 +108,7 @@ db.exec(`
     review_id TEXT NOT NULL,
     field_name TEXT NOT NULL,
     field_label TEXT NOT NULL,
+    ai_description TEXT DEFAULT '',
     field_type TEXT NOT NULL DEFAULT 'text',
     options TEXT DEFAULT '[]',
     required INTEGER DEFAULT 0,

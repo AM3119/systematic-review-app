@@ -1,9 +1,11 @@
-export function normalizeTitle(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+export function normalizeText(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 export function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
   const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
     Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
   );
@@ -18,7 +20,7 @@ export function levenshtein(a: string, b: string): number {
 }
 
 export function titleSimilarity(a: string, b: string): number {
-  const na = normalizeTitle(a), nb = normalizeTitle(b);
+  const na = normalizeText(a), nb = normalizeText(b);
   if (na === nb) return 1.0;
   const maxLen = Math.max(na.length, nb.length);
   if (maxLen === 0) return 1.0;
@@ -34,6 +36,15 @@ export function jaccardSimilarity(a: string, b: string): number {
   return intersection.size / union.size;
 }
 
+// Truncate long abstracts for comparison to avoid O(n²) on huge texts
+function abstractSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const ca = a.slice(0, 500);
+  const cb = b.slice(0, 500);
+  // Use Jaccard on word sets (fast for long text)
+  return jaccardSimilarity(ca, cb);
+}
+
 export interface Article {
   id: string;
   title: string;
@@ -42,16 +53,19 @@ export interface Article {
   doi?: string;
   pmid?: string;
   journal?: string;
+  abstract?: string;
 }
 
 export interface DuplicatePair {
   article1Id: string;
   article2Id: string;
   similarity: number;
+  titleSim: number;
+  abstractSim: number;
   matchReason: string;
 }
 
-export function detectDuplicates(articles: Article[]): DuplicatePair[] {
+export function detectDuplicates(articles: Article[], threshold = 0.85): DuplicatePair[] {
   const pairs: DuplicatePair[] = [];
 
   for (let i = 0; i < articles.length; i++) {
@@ -59,54 +73,57 @@ export function detectDuplicates(articles: Article[]): DuplicatePair[] {
       const a = articles[i];
       const b = articles[j];
       let similarity = 0;
+      let titleSim = 0;
+      let abstractSim = 0;
       let reason = '';
 
-      // Exact DOI match
+      // Exact DOI match → 100%
       if (a.doi && b.doi && a.doi.trim() && b.doi.trim() &&
           a.doi.toLowerCase().trim() === b.doi.toLowerCase().trim()) {
-        pairs.push({ article1Id: a.id, article2Id: b.id, similarity: 1.0, matchReason: 'Exact DOI match' });
+        pairs.push({ article1Id: a.id, article2Id: b.id, similarity: 1.0, titleSim: 1.0, abstractSim: 0, matchReason: 'Exact DOI match' });
         continue;
       }
 
-      // Exact PMID match
+      // Exact PMID match → 100%
       if (a.pmid && b.pmid && a.pmid.trim() && b.pmid.trim() &&
           a.pmid.trim() === b.pmid.trim()) {
-        pairs.push({ article1Id: a.id, article2Id: b.id, similarity: 1.0, matchReason: 'Exact PMID match' });
+        pairs.push({ article1Id: a.id, article2Id: b.id, similarity: 1.0, titleSim: 1.0, abstractSim: 0, matchReason: 'Exact PMID match' });
         continue;
       }
 
-      // Title similarity
-      const titleSim = titleSimilarity(a.title, b.title);
-      const jaccardSim = jaccardSimilarity(a.title, b.title);
-      const combinedTitleSim = (titleSim * 0.6 + jaccardSim * 0.4);
+      // Title similarity (60% weight Levenshtein + 40% Jaccard)
+      const lev = titleSimilarity(a.title, b.title);
+      const jac = jaccardSimilarity(a.title, b.title);
+      titleSim = lev * 0.6 + jac * 0.4;
 
-      if (combinedTitleSim >= 0.85) {
-        similarity = combinedTitleSim;
-        reason = `Title similarity: ${Math.round(combinedTitleSim * 100)}%`;
+      // Abstract similarity (Jaccard on word sets)
+      abstractSim = abstractSimilarity(a.abstract || '', b.abstract || '');
 
-        // Boost if same year
-        if (a.year && b.year && a.year === b.year) {
-          similarity = Math.min(1.0, similarity + 0.05);
-          reason += ', same year';
-        }
+      // Combined score: title 70% + abstract 30%
+      similarity = titleSim * 0.70 + abstractSim * 0.30;
 
-        // Boost if same journal
-        if (a.journal && b.journal) {
-          const journalSim = titleSimilarity(a.journal, b.journal);
-          if (journalSim > 0.8) {
-            similarity = Math.min(1.0, similarity + 0.05);
-            reason += ', same journal';
-          }
-        }
+      const reasons: string[] = [];
+      reasons.push(`Title: ${Math.round(titleSim * 100)}%`);
+      if (a.abstract && b.abstract) reasons.push(`Abstract: ${Math.round(abstractSim * 100)}%`);
 
-        if (similarity >= 0.85) {
-          pairs.push({ article1Id: a.id, article2Id: b.id, similarity, matchReason: reason });
-        }
+      // Boosters
+      if (a.year && b.year && a.year === b.year) {
+        similarity = Math.min(1.0, similarity + 0.03);
+        reasons.push('same year');
+      }
+      if (a.journal && b.journal && jaccardSimilarity(a.journal, b.journal) > 0.7) {
+        similarity = Math.min(1.0, similarity + 0.03);
+        reasons.push('same journal');
+      }
+
+      if (similarity >= threshold) {
+        reason = reasons.join(', ');
+        pairs.push({ article1Id: a.id, article2Id: b.id, similarity, titleSim, abstractSim, matchReason: reason });
       }
     }
   }
 
-  return pairs;
+  return pairs.sort((a, b) => b.similarity - a.similarity);
 }
 
 export function groupDuplicates(pairs: DuplicatePair[]): Map<string, string[]> {

@@ -1,7 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
+// Load .env in development
+try { require('dotenv').config({ path: require('path').join(__dirname, '../../.env') }); } catch {}
+
 export const JWT_SECRET = process.env.JWT_SECRET || 'sra-super-secret-key-change-in-production';
+if (!process.env.JWT_SECRET) console.warn('⚠️  JWT_SECRET not set in .env — using insecure default. Set it before deploying!');
 
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; name: string };

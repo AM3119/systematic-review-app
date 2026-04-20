@@ -1,3 +1,9 @@
+import path from 'path';
+import fs from 'fs';
+
+// Load .env before anything else
+try { require('dotenv').config({ path: path.join(__dirname, '../.env') }); } catch {}
+
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -19,6 +25,11 @@ const io = new SocketServer(httpServer, {
 
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(express.json({ limit: '20mb' }));
+
+// Serve uploaded PDFs as static files
+const PDF_DIR = path.join(__dirname, '../../data/pdfs');
+if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
+app.use('/api/pdfs', express.static(PDF_DIR));
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -52,23 +63,20 @@ io.on('connection', (socket) => {
     socket.to(`review:${reviewId}`).emit('user-left', { userId: user.id, name: user.name });
   });
 
-  socket.on('screening-decision', (data: { reviewId: string; articleId: string; phase: string; decision: string }) => {
-    socket.to(`review:${data.reviewId}`).emit('decision-made', {
-      userId: user.id, name: user.name, ...data
-    });
+  socket.on('screening-decision', (data: any) => {
+    socket.to(`review:${data.reviewId}`).emit('decision-made', { userId: user.id, name: user.name, ...data });
   });
 
-  socket.on('typing', (data: { reviewId: string; articleId: string; field: string }) => {
+  socket.on('typing', (data: any) => {
     socket.to(`review:${data.reviewId}`).emit('collaborator-typing', { userId: user.id, name: user.name, ...data });
   });
 
   socket.on('disconnect', () => {});
 });
 
-// Make io accessible to routes
-app.set('io', io);
-
 const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
-  console.log(`SRA Backend running on http://localhost:${PORT}`);
+  console.log(`✅ SRA Backend running on http://localhost:${PORT}`);
+  console.log(`   JWT: ${process.env.JWT_SECRET ? '🔒 Set from .env' : '⚠️  Using default (set JWT_SECRET in .env)'}`);
+  console.log(`   AI:  ${process.env.ANTHROPIC_API_KEY ? '🤖 Anthropic key configured' : '⚠️  No ANTHROPIC_API_KEY (AI extraction disabled)'}`);
 });
