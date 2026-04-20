@@ -124,14 +124,60 @@ router.post('/:reviewId/extraction/:articleId/bulk', authMiddleware, (req: AuthR
   res.json({ success: true, updated: fields.length });
 });
 
-// ─── AI Extraction ───────────────────────────────────────────────────────────
+// ─── AI Extraction (Ollama - fully local) ────────────────────────────────────
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
+
+async function ollamaChat(prompt: string): Promise<string> {
+  const body = JSON.stringify({
+    model: OLLAMA_MODEL,
+    prompt,
+    stream: false,
+    options: { temperature: 0.1, num_predict: 2000 }
+  });
+
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const url = new URL('/api/generate', OLLAMA_URL);
+    const reqOpts = { hostname: url.hostname, port: url.port || 11434, path: url.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
+    const r = http.request(reqOpts, (res: any) => {
+      let data = '';
+      res.on('data', (chunk: any) => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data).response || ''); }
+        catch { reject(new Error('Invalid Ollama response')); }
+      });
+    });
+    r.on('error', reject);
+    r.write(body);
+    r.end();
+  });
+}
+
+// Check if Ollama is reachable and has the model
+router.get('/:reviewId/extraction/ai-status', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const http = require('http');
+    const url = new URL('/api/tags', OLLAMA_URL);
+    const data: string = await new Promise((resolve, reject) => {
+      const r = http.get({ hostname: url.hostname, port: url.port || 11434, path: url.pathname }, (resp: any) => {
+        let d = ''; resp.on('data', (c: any) => d += c); resp.on('end', () => resolve(d));
+      });
+      r.on('error', reject);
+    });
+    const { models = [] } = JSON.parse(data);
+    const available = models.map((m: any) => m.name);
+    const modelReady = available.some((n: string) => n.startsWith(OLLAMA_MODEL));
+    res.json({ ollama: true, model: OLLAMA_MODEL, model_ready: modelReady, available_models: available });
+  } catch {
+    res.json({ ollama: false, model: OLLAMA_MODEL, model_ready: false });
+  }
+});
+
 router.post('/:reviewId/extraction/:articleId/ai-extract', authMiddleware, async (req: AuthRequest, res: Response) => {
   const access = reviewAccess(req.params.reviewId, req.user!.id);
   if (!access || ['viewer', 'highlighter'].includes(access.role)) return res.status(403).json({ error: 'Insufficient permissions' });
-
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(400).json({ error: 'ANTHROPIC_API_KEY not configured in .env' });
-  }
 
   const article = db.prepare('SELECT * FROM articles WHERE id = ? AND review_id = ?')
     .get(req.params.articleId, req.params.reviewId) as any;
@@ -140,6 +186,7 @@ router.post('/:reviewId/extraction/:articleId/ai-extract', authMiddleware, async
   const fields = db.prepare('SELECT * FROM extraction_fields WHERE review_id = ? ORDER BY order_num')
     .all(req.params.reviewId) as any[];
   for (const f of fields) f.options = JSON.parse(f.options || '[]');
+  if (!fields.length) return res.status(400).json({ error: 'No extraction fields defined' });
 
   // Build author citation
   const authors = (article.authors || '').split(';').map((a: string) => a.trim()).filter(Boolean);
@@ -150,61 +197,43 @@ router.post('/:reviewId/extraction/:articleId/ai-extract', authMiddleware, async
     `Title: ${article.title}`,
     `Authors: ${article.authors}`,
     `Journal: ${article.journal} (${article.year})`,
-    `DOI: ${article.doi}`,
+    `DOI: ${article.doi || 'N/A'}`,
     '',
     'Abstract:',
     article.abstract || '(No abstract available)',
   ].join('\n');
 
   const fieldsPrompt = fields.map((f: any) => {
-    let desc = `- **${f.field_label}** (field_name: ${f.field_name}, type: ${f.field_type})`;
-    if (f.ai_description) desc += `\n  Description: ${f.ai_description}`;
-    if (f.options?.length) desc += `\n  Valid options: ${f.options.join(', ')}`;
+    let desc = `  "${f.field_name}": // ${f.field_label}`;
+    if (f.ai_description) desc += ` — ${f.ai_description}`;
+    if (f.options?.length) desc += ` [must be one of: ${f.options.join(', ')}]`;
     return desc;
   }).join('\n');
 
-  try {
-    // Dynamic import to avoid hard dependency if key not set
-    const Anthropic = require('@anthropic-ai/sdk');
-    const client = new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-    const message = await client.messages.create({
-      model: 'claude-opus-4-5',
-      max_tokens: 2000,
-      messages: [{
-        role: 'user',
-        content: `You are a systematic review data extractor. Extract structured data from this article for a systematic review.
+  const prompt = `You are a systematic review data extractor. Read the article below and extract data for each field.
 
 ARTICLE:
 ${articleContent}
 
-FIELDS TO EXTRACT:
+Extract the following fields and return ONLY a JSON object (no explanation, no markdown, just raw JSON):
+{
 ${fieldsPrompt}
+}
 
-INSTRUCTIONS:
-- Extract accurate information for each field based on the article content
-- For "select" type fields, use ONLY one of the valid options listed
-- For citation/author fields, use format: "${citation}"
-- If information is not available or unclear, respond with "Not reported" or "Unclear"
-- Be concise and factual — extract only what's explicitly stated
-- Return a JSON object with field_name as keys and extracted values as strings
+Rules:
+- For select fields, use ONLY one of the listed options exactly
+- For author/citation fields use: "${citation}"
+- If not reported, use "Not reported"
+- Return raw JSON only, starting with { and ending with }`;
 
-Return ONLY valid JSON, no explanation:`
-      }]
-    });
-
-    const content = message.content[0];
-    if (content.type !== 'text') throw new Error('Unexpected response type');
-
-    // Parse JSON from response
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('No JSON in response');
+  try {
+    const responseText = await ollamaChat(prompt);
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error(`Model returned no JSON. Response: ${responseText.slice(0, 200)}`);
     const extracted = JSON.parse(jsonMatch[0]);
 
-    // Save to database
     const fieldMap = new Map(fields.map((f: any) => [f.field_name, f.id]));
     const toSave: Array<{ field_id: string; value: string }> = [];
-
     for (const [fieldName, value] of Object.entries(extracted)) {
       const fieldId = fieldMap.get(fieldName);
       if (fieldId) toSave.push({ field_id: fieldId as string, value: String(value) });
@@ -224,9 +253,12 @@ Return ONLY valid JSON, no explanation:`
     });
 
     awardPoints(req.user!.id, POINTS.EXTRACT_DATA * 2, req.params.reviewId);
-    res.json({ success: true, extracted, citation, fields_populated: toSave.length });
+    res.json({ success: true, extracted, citation, fields_populated: toSave.length, model: OLLAMA_MODEL });
   } catch (err: any) {
     console.error('AI extraction error:', err.message);
+    if (err.message?.includes('ECONNREFUSED')) {
+      return res.status(503).json({ error: 'Ollama not running', message: 'Start Ollama with: ollama serve' });
+    }
     res.status(500).json({ error: 'AI extraction failed', message: err.message });
   }
 });

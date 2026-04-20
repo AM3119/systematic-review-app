@@ -94,4 +94,5 @@ export const extractionApi = {
   saveBulk: (reviewId: string, articleId: string, fields: any[]) => api.post(`/reviews/${reviewId}/extraction/${articleId}/bulk`, { fields }),
   summary: (reviewId: string) => api.get(`/reviews/${reviewId}/extraction/summary`),
   aiExtract: (reviewId: string, articleId: string) => api.post(`/reviews/${reviewId}/extraction/${articleId}/ai-extract`),
+  aiStatus: (reviewId: string) => api.get(`/reviews/${reviewId}/extraction/ai-status`),
 };

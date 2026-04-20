@@ -96,15 +96,21 @@ function ExtractionForm({ reviewId, article, fields, onBack }: { reviewId: strin
     setAiLoading(true);
     try {
       const { data } = await extractionApi.aiExtract(reviewId, article.id);
-      // Reload data
       const freshData = await extractionApi.getData(reviewId, article.id);
       const map: Record<string, string> = {};
       for (const d of freshData.data) map[d.field_id] = d.value;
       setValues(map);
-      toast.success(`🤖 AI extracted ${data.fields_populated} fields (${data.citation})`);
+      toast.success(`🤖 AI extracted ${data.fields_populated} fields using ${data.model || 'local model'}`);
       qc.invalidateQueries(['extraction-data', reviewId, article.id]);
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'AI extraction failed — check ANTHROPIC_API_KEY in .env');
+      const msg = err.response?.data?.message || err.response?.data?.error || 'AI extraction failed';
+      if (msg.includes('Ollama not running') || msg.includes('ECONNREFUSED')) {
+        toast.error('Ollama is not running. Start it with: ollama serve', { duration: 6000 });
+      } else if (msg.includes('model') || msg.includes('pull')) {
+        toast.error(`Model not ready. Run: ollama pull llama3.2`, { duration: 6000 });
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setAiLoading(false);
     }
@@ -142,7 +148,7 @@ function ExtractionForm({ reviewId, article, fields, onBack }: { reviewId: strin
                 AI Auto-Extraction
               </p>
               <p className="text-sm text-brand-600 dark:text-brand-400 mt-0.5">
-                Claude AI reads the abstract/full text and populates all fields automatically
+                Local AI (Ollama) reads the abstract and populates all fields — no internet required
               </p>
             </div>
             <button onClick={handleAiExtract} disabled={aiLoading}

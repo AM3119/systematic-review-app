@@ -1,11 +1,11 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
 
 const DB_DIR = path.join(__dirname, '../../data');
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
-const db = new Database(path.join(DB_DIR, 'sra.db'));
+const db = new DatabaseSync(path.join(DB_DIR, 'sra.db'));
 
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
@@ -196,7 +196,9 @@ db.exec(`
 `);
 
 export function transaction<T>(fn: () => T): T {
-  return db.transaction(fn)() as T;
+  db.exec('BEGIN');
+  try { const r = fn(); db.exec('COMMIT'); return r; }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
 export default db;

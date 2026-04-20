@@ -6,7 +6,6 @@ try { require('dotenv').config({ path: path.join(__dirname, '../.env') }); } cat
 
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
 import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
 import jwt from 'jsonwebtoken';
@@ -81,5 +80,5 @@ const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`✅ SRA Backend running on http://localhost:${PORT}`);
   console.log(`   JWT: ${process.env.JWT_SECRET ? '🔒 Set from .env' : '⚠️  Using default (set JWT_SECRET in .env)'}`);
-  console.log(`   AI:  ${process.env.ANTHROPIC_API_KEY ? '🤖 Anthropic key configured' : '⚠️  No ANTHROPIC_API_KEY (AI extraction disabled)'}`);
+  console.log(`   AI:  🦙 Ollama (${process.env.OLLAMA_MODEL || 'llama3.2'}) at ${process.env.OLLAMA_URL || 'http://localhost:11434'}`);
 });
