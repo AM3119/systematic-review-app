@@ -19,17 +19,22 @@ import { JWT_SECRET } from './middleware/auth';
 const app = express();
 const httpServer = createServer(app);
 
-const ALLOWED_ORIGIN = process.env.FRONTEND_URL || 'http://localhost:5173';
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// In production the frontend is served from this same server, so any origin is fine.
+// In dev, allow the Vite dev server.
+const ALLOWED_ORIGIN = IS_PROD ? '*' : (process.env.FRONTEND_URL || 'http://localhost:5173');
 
 const io = new SocketServer(httpServer, {
-  cors: { origin: ALLOWED_ORIGIN, credentials: true }
+  cors: { origin: ALLOWED_ORIGIN, credentials: !IS_PROD }
 });
 
-app.use(cors({ origin: ALLOWED_ORIGIN, credentials: true }));
+app.use(cors({ origin: ALLOWED_ORIGIN, credentials: !IS_PROD }));
 app.use(express.json({ limit: '20mb' }));
 
-// Serve uploaded PDFs as static files
-const PDF_DIR = path.join(__dirname, '../../data/pdfs');
+// Serve uploaded PDFs from the persistent data directory
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '../../data');
+const PDF_DIR = path.join(DATA_DIR, 'pdfs');
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 app.use('/api/pdfs', express.static(PDF_DIR));
 
@@ -39,6 +44,15 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/reviews', articleRoutes);
 app.use('/api/reviews', screeningRoutes);
 app.use('/api/reviews', extractionRoutes);
+
+// In production: serve the frontend SPA for all non-API routes
+if (IS_PROD) {
+  const frontendDist = path.join(__dirname, '../../frontend/dist');
+  if (fs.existsSync(frontendDist)) {
+    app.use(express.static(frontendDist));
+    app.get('*', (_req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
+  }
+}
 
 // Socket.io for real-time collaboration
 io.use((socket, next) => {

@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
 
-const DB_DIR = path.join(__dirname, '../../data');
+// DATA_DIR env var overrides default (used on Render to point to persistent disk)
+const DB_DIR = process.env.DATA_DIR || path.join(__dirname, '../../data');
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
 const db = new DatabaseSync(path.join(DB_DIR, 'sra.db'));

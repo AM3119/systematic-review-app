@@ -6,7 +6,7 @@ import db, { transaction } from '../db';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { awardPoints, updateStreak, POINTS } from '../utils/gamification';
 
-const PDF_DIR = path.join(__dirname, '../../../data/pdfs');
+const PDF_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, '../../../data'), 'pdfs');
 
 async function extractPdfText(localUrl: string): Promise<string | null> {
   try {

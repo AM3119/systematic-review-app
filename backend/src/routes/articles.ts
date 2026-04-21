@@ -12,8 +12,8 @@ import { fetchFullText } from '../utils/fulltext';
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-// PDF upload storage
-const PDF_DIR = path.join(__dirname, '../../../data/pdfs');
+// PDF upload storage (DATA_DIR env var used on Render for persistent disk)
+const PDF_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, '../../../data'), 'pdfs');
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR, { recursive: true });
 const pdfStorage = multer.diskStorage({
   destination: PDF_DIR,
