@@ -7,7 +7,7 @@ import DecisionBadge from '../common/DecisionBadge';
 import ProgressBar from '../common/ProgressBar';
 import {
   ChevronLeftIcon, ChevronRightIcon, CheckIcon, XMarkIcon, QuestionMarkCircleIcon,
-  MagnifyingGlassIcon, FunnelIcon, TagIcon, SparklesIcon,
+  MagnifyingGlassIcon, FunnelIcon,
   CheckCircleIcon as CheckCircleOutline
 } from '@heroicons/react/24/outline';
 import { CheckCircleIcon } from '@heroicons/react/24/solid';
@@ -42,14 +42,13 @@ function highlightText(text: string, keywords: string[]): React.ReactNode {
 interface ScreeningInterfaceProps {
   reviewId: string;
   phase: 'abstract' | 'fulltext';
-  requireAbstract?: string; // e.g. 'include' or 'include,maybe'
+  requireAbstract?: string;
 }
 
 export default function ScreeningInterface({ reviewId, phase, requireAbstract }: ScreeningInterfaceProps) {
   const user = useAuthStore(s => s.user);
   const qc = useQueryClient();
 
-  // Filter state
   const [filter, setFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [keywordHighlight, setKeywordHighlight] = useState('');
@@ -57,7 +56,6 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
   const [showFilters, setShowFilters] = useState(false);
   const [customFilter, setCustomFilter] = useState('');
 
-  // UI state
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showReasonModal, setShowReasonModal] = useState(false);
   const [selectedReason, setSelectedReason] = useState('');
@@ -67,7 +65,6 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
   const [bulkMode, setBulkMode] = useState(false);
   const screenStartTime = useRef(Date.now());
 
-  // Compute active highlight keywords
   const highlightKeywords: string[] = [
     ...(keywordHighlight ? keywordHighlight.split(',').map(k => k.trim()).filter(Boolean) : []),
     ...(customFilter ? [customFilter] : []),
@@ -96,7 +93,6 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
 
   const allArticles = articlesData?.articles || [];
 
-  // Apply client-side study type + custom filters
   const articles = allArticles.filter((a: any) => {
     if (!activeStudyTypeFilters.length && !customFilter) return true;
     const text = ((a.title || '') + ' ' + (a.abstract || '')).toLowerCase();
@@ -119,7 +115,7 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
         refetchProgress();
         if (res.data.has_conflict) toast('⚠️ Conflict detected', { icon: '⚠️', style: { background: '#FEF3C7' } });
       },
-      onError: (err: any) => toast.error(err.response?.data?.error || 'Failed to save decision')
+      onError: (err: any) => { toast.error(err.response?.data?.error || 'Failed to save decision'); }
     }
   );
 
@@ -134,7 +130,6 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
     });
   }, [current, currentIndex, articles.length, phase, decideMutation]);
 
-  // Bulk decision
   const bulkDecide = async (decision: 'include' | 'exclude' | 'maybe', reason?: string) => {
     const ids = Array.from(selectedIds);
     let count = 0;
@@ -151,7 +146,6 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
     refetchProgress();
   };
 
-  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -178,12 +172,83 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
   const totalForPhase = progress?.total_articles || 0;
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === articles.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(articles.map((a: any) => a.id)));
-    }
+    if (selectedIds.size === articles.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(articles.map((a: any) => a.id)));
   };
+
+  // ─── Shared: Article list sidebar ────────────────────────────────────────────
+  const ArticleList = (
+    <div className={`${phase === 'fulltext' ? 'w-52' : 'w-72'} border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex flex-col flex-shrink-0`}>
+      <div className="p-3 border-b border-gray-100 dark:border-gray-800 space-y-2">
+        <div className="relative">
+          <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input className="input pl-8 py-1.5 text-xs" placeholder="Search articles..."
+            value={search} onChange={e => { setSearch(e.target.value); setCurrentIndex(0); }} />
+        </div>
+        <div className="flex gap-1 flex-wrap">
+          {(['all', 'unscreened', 'include', 'exclude', 'maybe'] as const).map(f => (
+            <button key={f} onClick={() => { setFilter(f); setCurrentIndex(0); }}
+              className={`text-xs px-2 py-1 rounded-md font-medium transition-colors ${
+                filter === f
+                  ? 'bg-brand-600 text-white'
+                  : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+              }`}>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
+        </div>
+        {bulkMode && (
+          <button onClick={toggleSelectAll} className="text-xs text-brand-600 dark:text-brand-400 hover:underline w-full text-left">
+            {selectedIds.size === articles.length ? 'Deselect all' : `Select all ${articles.length}`}
+          </button>
+        )}
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {articles.map((article: any, i: number) => (
+          <button key={article.id}
+            onClick={() => {
+              if (bulkMode) { const s = new Set(selectedIds); s.has(article.id) ? s.delete(article.id) : s.add(article.id); setSelectedIds(s); }
+              else setCurrentIndex(i);
+            }}
+            className={`w-full text-left p-3 border-b border-gray-50 dark:border-gray-800 transition-colors ${
+              bulkMode && selectedIds.has(article.id)
+                ? 'bg-brand-50 dark:bg-brand-900/20'
+                : i === currentIndex && !bulkMode
+                  ? 'bg-brand-50 dark:bg-brand-900/20 border-l-2 border-l-brand-600'
+                  : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+            }`}>
+            <div className="flex items-start gap-2">
+              {bulkMode && (
+                <div className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 ${selectedIds.has(article.id) ? 'bg-brand-600 border-brand-600' : 'border-gray-300 dark:border-gray-600'}`}>
+                  {selectedIds.has(article.id) && <CheckIcon className="w-3 h-3 text-white" />}
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-gray-900 dark:text-gray-100 line-clamp-2 mb-1">
+                  {highlightKeywords.length > 0 ? highlightText(article.title, highlightKeywords) : article.title}
+                </p>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">{article.year}</span>
+                  <div className="flex items-center gap-1">
+                    {phase === 'fulltext' && (
+                      <span title={article.full_text_url ? 'Has full text' : 'No full text'}
+                        className={`w-1.5 h-1.5 rounded-full ${article.full_text_url ? 'bg-emerald-400' : 'bg-gray-300 dark:bg-gray-600'}`} />
+                    )}
+                    <DecisionBadge decision={article.my_decision} size="sm" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </button>
+        ))}
+        {articles.length === 0 && (
+          <div className="p-6 text-center text-sm text-gray-400">
+            {filter === 'unscreened' ? '🎉 All caught up!' : 'No articles found'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-gray-50 dark:bg-gray-950">
@@ -226,7 +291,6 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
         </div>
       )}
 
-      {/* Filter panel */}
       {showFilters && (
         <div className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-6 py-4 space-y-4">
           <div className="grid grid-cols-3 gap-4">
@@ -242,7 +306,7 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
             </div>
           </div>
           <div>
-            <label className="label text-xs mb-2">Quick Study-Type Filters (shows articles matching ANY selected)</label>
+            <label className="label text-xs mb-2">Quick Study-Type Filters</label>
             <div className="flex flex-wrap gap-2">
               {STUDY_TYPE_FILTERS.map(f => (
                 <button key={f.label} onClick={() => {
@@ -279,167 +343,240 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Article list */}
-        <div className="w-72 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex flex-col">
-          <div className="p-3 border-b border-gray-100 dark:border-gray-800 space-y-2">
-            <div className="relative">
-              <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input className="input pl-8 py-1.5 text-xs" placeholder="Search articles..."
-                value={search} onChange={e => { setSearch(e.target.value); setCurrentIndex(0); }} />
-            </div>
-            <div className="flex gap-1 flex-wrap">
-              {(['all', 'unscreened', 'include', 'exclude', 'maybe'] as const).map(f => (
-                <button key={f} onClick={() => { setFilter(f); setCurrentIndex(0); }}
-                  className={`text-xs px-2 py-1 rounded-md font-medium transition-colors ${
-                    filter === f
-                      ? 'bg-brand-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
-                  }`}>
-                  {f.charAt(0).toUpperCase() + f.slice(1)}
-                </button>
-              ))}
-            </div>
-            {bulkMode && (
-              <button onClick={toggleSelectAll} className="text-xs text-brand-600 dark:text-brand-400 hover:underline w-full text-left">
-                {selectedIds.size === articles.length ? 'Deselect all' : `Select all ${articles.length}`}
-              </button>
-            )}
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {articles.map((article: any, i: number) => (
-              <button key={article.id}
-                onClick={() => { if (bulkMode) { const s = new Set(selectedIds); s.has(article.id) ? s.delete(article.id) : s.add(article.id); setSelectedIds(s); } else setCurrentIndex(i); }}
-                className={`w-full text-left p-3 border-b border-gray-50 dark:border-gray-800 transition-colors ${
-                  bulkMode && selectedIds.has(article.id)
-                    ? 'bg-brand-50 dark:bg-brand-900/20'
-                    : i === currentIndex && !bulkMode
-                      ? 'bg-brand-50 dark:bg-brand-900/20 border-l-2 border-l-brand-600'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-                }`}>
-                <div className="flex items-start gap-2">
-                  {bulkMode && (
-                    <div className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 ${selectedIds.has(article.id) ? 'bg-brand-600 border-brand-600' : 'border-gray-300 dark:border-gray-600'}`}>
-                      {selectedIds.has(article.id) && <CheckIcon className="w-3 h-3 text-white" />}
+      {/* ─── FULLTEXT: 3-column split (list | PDF | decisions) ─── */}
+      {phase === 'fulltext' ? (
+        <div className="flex flex-1 overflow-hidden">
+          {ArticleList}
+
+          {/* Center: PDF viewer or abstract fallback */}
+          <div className="flex-1 flex flex-col overflow-hidden border-r border-gray-200 dark:border-gray-800">
+            {current ? (
+              current.full_text_url ? (
+                <iframe
+                  key={current.full_text_url}
+                  src={current.full_text_url}
+                  className="flex-1 w-full bg-gray-100 dark:bg-gray-900"
+                  title={current.title}
+                />
+              ) : (
+                <div className="flex-1 overflow-y-auto p-6">
+                  <div className="max-w-2xl mx-auto">
+                    <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                      <p className="text-sm text-amber-700 dark:text-amber-400">⚠️ No full text available — showing abstract</p>
                     </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-gray-900 dark:text-gray-100 line-clamp-2 mb-1">
-                      {highlightKeywords.length > 0 ? highlightText(article.title, highlightKeywords) : article.title}
-                    </p>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-400">{article.year}</span>
-                      <DecisionBadge decision={article.my_decision} size="sm" />
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2 leading-snug">
+                      {highlightKeywords.length > 0 ? highlightText(current.title, highlightKeywords) : current.title}
+                    </h2>
+                    <div className="flex flex-wrap gap-3 text-sm text-gray-500 dark:text-gray-400 mb-4">
+                      {current.authors && <span>👤 {current.authors.split(';').slice(0, 3).join('; ')}{current.authors.split(';').length > 3 ? ' et al.' : ''}</span>}
+                      {current.journal && <span>📚 {current.journal}</span>}
+                      {current.year && <span>📅 {current.year}</span>}
+                      {current.doi && <a href={`https://doi.org/${current.doi}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">DOI</a>}
                     </div>
+                    {current.abstract ? (
+                      <>
+                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Abstract</p>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                          {highlightKeywords.length > 0 ? highlightText(current.abstract, highlightKeywords) : current.abstract}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-gray-400 italic">No abstract available</p>
+                    )}
                   </div>
                 </div>
-              </button>
-            ))}
-            {articles.length === 0 && (
-              <div className="p-6 text-center text-sm text-gray-400">
-                {filter === 'unscreened' ? '🎉 All caught up!' : 'No articles found'}
+              )
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-gray-400">
+                <div className="text-center">
+                  <CheckCircleIcon className="w-16 h-16 text-emerald-300 mb-4 mx-auto" />
+                  <p className="text-lg font-medium text-gray-600 dark:text-gray-400">All caught up!</p>
+                </div>
               </div>
             )}
           </div>
-        </div>
 
-        {/* Article detail */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {current ? (
-            <div className="max-w-3xl mx-auto">
-              <div className="flex items-center justify-between mb-4">
-                <button onClick={() => setCurrentIndex(i => Math.max(0, i - 1))} disabled={currentIndex === 0}
-                  className="btn-secondary text-sm py-1.5 disabled:opacity-30">
-                  <ChevronLeftIcon className="w-4 h-4" />Prev
-                </button>
-                <span className="text-sm text-gray-500 dark:text-gray-400">{currentIndex + 1} of {articles.length}</span>
-                <button onClick={() => setCurrentIndex(i => Math.min(articles.length - 1, i + 1))} disabled={currentIndex >= articles.length - 1}
-                  className="btn-secondary text-sm py-1.5 disabled:opacity-30">
-                  Next<ChevronRightIcon className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="card p-6 mb-4">
-                <div className="flex items-start justify-between mb-3">
-                  <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 leading-snug flex-1 mr-4">
-                    {highlightKeywords.length > 0 ? highlightText(current.title, highlightKeywords) : current.title}
-                  </h2>
-                  <DecisionBadge decision={current.my_decision} />
-                </div>
-                <div className="flex flex-wrap gap-3 text-sm text-gray-500 dark:text-gray-400 mb-4">
-                  {current.authors && <span>👤 {current.authors.split(';').slice(0, 3).join('; ')}{current.authors.split(';').length > 3 ? ' et al.' : ''}</span>}
-                  {current.journal && <span>📚 {current.journal}</span>}
-                  {current.year && <span>📅 {current.year}</span>}
-                  {current.doi && <a href={`https://doi.org/${current.doi}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">DOI</a>}
-                  {current.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${current.pmid}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">PubMed</a>}
-                </div>
-                {current.abstract ? (
-                  <div>
-                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Abstract</p>
-                    <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
-                      {highlightKeywords.length > 0 ? highlightText(current.abstract, highlightKeywords) : current.abstract}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-400 italic">No abstract available</p>
-                )}
-                {phase === 'fulltext' && current.full_text_url && (
-                  <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800 flex gap-3">
-                    <a href={current.full_text_url} target="_blank" rel="noopener noreferrer" className="btn-secondary text-sm py-1.5 inline-flex">
-                      📄 View Full Text
-                    </a>
-                    <a href={current.full_text_url} download className="btn-secondary text-sm py-1.5 inline-flex">
-                      ⬇️ Download PDF
-                    </a>
-                  </div>
-                )}
-              </div>
-
-              {/* Others' decisions (unblinded) */}
-              {Array.isArray(current.others_decisions) && current.others_decisions.length > 0 && (
-                <div className="card p-4 mb-4 border-violet-100 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20">
-                  <p className="text-xs font-semibold text-violet-700 dark:text-violet-300 uppercase tracking-wider mb-2">Other Reviewers</p>
-                  <div className="flex gap-3 flex-wrap">
-                    {current.others_decisions.map((d: any, i: number) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <span className="text-xs text-violet-600 dark:text-violet-400">{d.name}:</span>
-                        <DecisionBadge decision={d.decision} size="sm" />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Decision buttons */}
-              <div className="flex gap-3 justify-center mt-4">
-                {[
-                  { decision: 'include' as const, icon: CheckIcon, label: 'Include', key: 'I', activeClass: 'border-emerald-500 bg-emerald-500 text-white shadow-lg shadow-emerald-100 dark:shadow-emerald-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-emerald-600 dark:text-emerald-400 hover:border-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20', onClick: () => decide('include') },
-                  { decision: 'maybe' as const, icon: QuestionMarkCircleIcon, label: 'Maybe', key: 'M', activeClass: 'border-amber-500 bg-amber-500 text-white shadow-lg shadow-amber-100 dark:shadow-amber-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-amber-600 dark:text-amber-400 hover:border-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20', onClick: () => decide('maybe') },
-                  { decision: 'exclude' as const, icon: XMarkIcon, label: 'Exclude', key: 'E', activeClass: 'border-red-500 bg-red-500 text-white shadow-lg shadow-red-100 dark:shadow-red-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-900/20', onClick: () => phase === 'fulltext' ? setShowReasonModal(true) : decide('exclude') },
-                ].map(({ decision, icon: Icon, label, key, activeClass, inactiveClass, onClick }) => (
-                  <button key={decision} onClick={onClick}
-                    className={`flex-1 max-w-36 flex flex-col items-center gap-2 py-4 rounded-xl border-2 transition-all duration-150 font-semibold ${current.my_decision === decision ? activeClass : inactiveClass}`}>
-                    <Icon className="w-7 h-7" />
-                    <span>{label}</span>
-                    <kbd className="text-xs opacity-60 font-mono bg-black/10 px-1.5 py-0.5 rounded">{key}</kbd>
+          {/* Right: Decision panel */}
+          <div className="w-72 flex-shrink-0 flex flex-col overflow-y-auto bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800">
+            {current ? (
+              <div className="p-5 flex flex-col h-full">
+                {/* Navigation */}
+                <div className="flex items-center justify-between mb-4">
+                  <button onClick={() => setCurrentIndex(i => Math.max(0, i - 1))} disabled={currentIndex === 0}
+                    className="btn-secondary text-xs py-1 px-2 disabled:opacity-30">
+                    <ChevronLeftIcon className="w-3.5 h-3.5" />
                   </button>
-                ))}
-              </div>
-              {current.my_reason && (
-                <div className="mt-3 text-center text-sm text-gray-500 dark:text-gray-400">
-                  Reason: <span className="font-medium text-gray-700 dark:text-gray-300">{current.my_reason}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">{currentIndex + 1} / {articles.length}</span>
+                  <button onClick={() => setCurrentIndex(i => Math.min(articles.length - 1, i + 1))} disabled={currentIndex >= articles.length - 1}
+                    className="btn-secondary text-xs py-1 px-2 disabled:opacity-30">
+                    <ChevronRightIcon className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-gray-400">
-              <CheckCircleIcon className="w-16 h-16 text-emerald-300 mb-4" />
-              <p className="text-lg font-medium text-gray-600 dark:text-gray-400">All caught up!</p>
-              <p className="text-sm">No articles to screen in this view</p>
-            </div>
-          )}
+
+                {/* Article info */}
+                <div className="mb-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-snug">
+                      {current.title}
+                    </h3>
+                    <DecisionBadge decision={current.my_decision} />
+                  </div>
+                  <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+                    {current.authors && <p className="truncate">👤 {current.authors.split(';')[0]?.trim()}{current.authors.split(';').length > 1 ? ' et al.' : ''}</p>}
+                    {current.journal && <p className="truncate">📚 {current.journal}</p>}
+                    {current.year && <p>📅 {current.year}</p>}
+                    {current.doi && (
+                      <a href={`https://doi.org/${current.doi}`} target="_blank" rel="noopener noreferrer"
+                        className="text-brand-600 hover:underline block truncate">
+                        DOI: {current.doi}
+                      </a>
+                    )}
+                    {!current.full_text_url && (
+                      <p className="text-amber-500">⚠️ No full text</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Others' decisions */}
+                {Array.isArray(current.others_decisions) && current.others_decisions.length > 0 && (
+                  <div className="mb-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+                    <p className="text-xs font-semibold text-violet-600 dark:text-violet-400 uppercase tracking-wider mb-2">Other Reviewers</p>
+                    <div className="space-y-1">
+                      {current.others_decisions.map((d: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between">
+                          <span className="text-xs text-gray-500 dark:text-gray-400">{d.name}</span>
+                          <DecisionBadge decision={d.decision} size="sm" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Decision buttons */}
+                <div className="space-y-2 mt-auto">
+                  {[
+                    { decision: 'include' as const, label: 'Include', key: 'I', icon: CheckIcon, activeClass: 'bg-emerald-500 border-emerald-500 text-white', inactiveClass: 'border-gray-200 dark:border-gray-700 text-emerald-600 dark:text-emerald-400 hover:border-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20', onClick: () => decide('include') },
+                    { decision: 'maybe' as const, label: 'Maybe', key: 'M', icon: QuestionMarkCircleIcon, activeClass: 'bg-amber-500 border-amber-500 text-white', inactiveClass: 'border-gray-200 dark:border-gray-700 text-amber-600 dark:text-amber-400 hover:border-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20', onClick: () => decide('maybe') },
+                    { decision: 'exclude' as const, label: 'Exclude', key: 'E', icon: XMarkIcon, activeClass: 'bg-red-500 border-red-500 text-white', inactiveClass: 'border-gray-200 dark:border-gray-700 text-red-600 dark:text-red-400 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-900/20', onClick: () => setShowReasonModal(true) },
+                  ].map(({ decision, label, key, icon: Icon, activeClass, inactiveClass, onClick }) => (
+                    <button key={decision} onClick={onClick}
+                      className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 font-semibold transition-all duration-150 ${current.my_decision === decision ? activeClass : inactiveClass}`}>
+                      <div className="flex items-center gap-2">
+                        <Icon className="w-5 h-5" />
+                        <span>{label}</span>
+                      </div>
+                      <kbd className="text-xs opacity-60 font-mono bg-black/10 px-1.5 py-0.5 rounded">{key}</kbd>
+                    </button>
+                  ))}
+                </div>
+
+                {current.my_reason && (
+                  <p className="mt-3 text-xs text-gray-500 dark:text-gray-400 text-center">
+                    Reason: <span className="font-medium text-gray-700 dark:text-gray-300">{current.my_reason}</span>
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 flex items-center justify-center p-6 text-center text-gray-400">
+                <div>
+                  <CheckCircleIcon className="w-12 h-12 text-emerald-300 mb-3 mx-auto" />
+                  <p className="text-sm font-medium">All caught up!</p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      ) : (
+        /* ─── ABSTRACT: 2-column layout (list | article detail) ─── */
+        <div className="flex flex-1 overflow-hidden">
+          {ArticleList}
+
+          {/* Article detail */}
+          <div className="flex-1 overflow-y-auto p-6">
+            {current ? (
+              <div className="max-w-3xl mx-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <button onClick={() => setCurrentIndex(i => Math.max(0, i - 1))} disabled={currentIndex === 0}
+                    className="btn-secondary text-sm py-1.5 disabled:opacity-30">
+                    <ChevronLeftIcon className="w-4 h-4" />Prev
+                  </button>
+                  <span className="text-sm text-gray-500 dark:text-gray-400">{currentIndex + 1} of {articles.length}</span>
+                  <button onClick={() => setCurrentIndex(i => Math.min(articles.length - 1, i + 1))} disabled={currentIndex >= articles.length - 1}
+                    className="btn-secondary text-sm py-1.5 disabled:opacity-30">
+                    Next<ChevronRightIcon className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="card p-6 mb-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 leading-snug flex-1 mr-4">
+                      {highlightKeywords.length > 0 ? highlightText(current.title, highlightKeywords) : current.title}
+                    </h2>
+                    <DecisionBadge decision={current.my_decision} />
+                  </div>
+                  <div className="flex flex-wrap gap-3 text-sm text-gray-500 dark:text-gray-400 mb-4">
+                    {current.authors && <span>👤 {current.authors.split(';').slice(0, 3).join('; ')}{current.authors.split(';').length > 3 ? ' et al.' : ''}</span>}
+                    {current.journal && <span>📚 {current.journal}</span>}
+                    {current.year && <span>📅 {current.year}</span>}
+                    {current.doi && <a href={`https://doi.org/${current.doi}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">DOI</a>}
+                    {current.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${current.pmid}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">PubMed</a>}
+                  </div>
+                  {current.abstract ? (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Abstract</p>
+                      <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                        {highlightKeywords.length > 0 ? highlightText(current.abstract, highlightKeywords) : current.abstract}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No abstract available</p>
+                  )}
+                </div>
+
+                {Array.isArray(current.others_decisions) && current.others_decisions.length > 0 && (
+                  <div className="card p-4 mb-4 border-violet-100 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20">
+                    <p className="text-xs font-semibold text-violet-700 dark:text-violet-300 uppercase tracking-wider mb-2">Other Reviewers</p>
+                    <div className="flex gap-3 flex-wrap">
+                      {current.others_decisions.map((d: any, i: number) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="text-xs text-violet-600 dark:text-violet-400">{d.name}:</span>
+                          <DecisionBadge decision={d.decision} size="sm" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-3 justify-center mt-4">
+                  {[
+                    { decision: 'include' as const, icon: CheckIcon, label: 'Include', key: 'I', activeClass: 'border-emerald-500 bg-emerald-500 text-white shadow-lg shadow-emerald-100 dark:shadow-emerald-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-emerald-600 dark:text-emerald-400 hover:border-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20', onClick: () => decide('include') },
+                    { decision: 'maybe' as const, icon: QuestionMarkCircleIcon, label: 'Maybe', key: 'M', activeClass: 'border-amber-500 bg-amber-500 text-white shadow-lg shadow-amber-100 dark:shadow-amber-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-amber-600 dark:text-amber-400 hover:border-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20', onClick: () => decide('maybe') },
+                    { decision: 'exclude' as const, icon: XMarkIcon, label: 'Exclude', key: 'E', activeClass: 'border-red-500 bg-red-500 text-white shadow-lg shadow-red-100 dark:shadow-red-900', inactiveClass: 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-900/20', onClick: () => decide('exclude') },
+                  ].map(({ decision, icon: Icon, label, key, activeClass, inactiveClass, onClick }) => (
+                    <button key={decision} onClick={onClick}
+                      className={`flex-1 max-w-36 flex flex-col items-center gap-2 py-4 rounded-xl border-2 transition-all duration-150 font-semibold ${current.my_decision === decision ? activeClass : inactiveClass}`}>
+                      <Icon className="w-7 h-7" />
+                      <span>{label}</span>
+                      <kbd className="text-xs opacity-60 font-mono bg-black/10 px-1.5 py-0.5 rounded">{key}</kbd>
+                    </button>
+                  ))}
+                </div>
+                {current.my_reason && (
+                  <div className="mt-3 text-center text-sm text-gray-500 dark:text-gray-400">
+                    Reason: <span className="font-medium text-gray-700 dark:text-gray-300">{current.my_reason}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                <CheckCircleIcon className="w-16 h-16 text-emerald-300 mb-4" />
+                <p className="text-lg font-medium text-gray-600 dark:text-gray-400">All caught up!</p>
+                <p className="text-sm">No articles to screen in this view</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Exclude reason modal */}
       {showReasonModal && (

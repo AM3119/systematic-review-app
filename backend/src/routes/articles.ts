@@ -30,7 +30,7 @@ router.get('/:reviewId/articles', authMiddleware, (req: AuthRequest, res: Respon
   const access = reviewAccess(req.params.reviewId, req.user!.id);
   if (!access) return res.status(403).json({ error: 'Access denied' });
 
-  const { phase = 'abstract', decision, search, tag, duplicate, require_abstract, limit = 50, offset = 0 } = req.query;
+  const { phase = 'abstract', decision, search, tag, duplicate, require_abstract, has_fulltext, any_include, limit = 50, offset = 0 } = req.query;
   const uid = req.user!.id;
   const rid = req.params.reviewId;
 
@@ -63,6 +63,15 @@ router.get('/:reviewId/articles', authMiddleware, (req: AuthRequest, res: Respon
     const ph = decisions.map(() => '?').join(',');
     conditions.push(`EXISTS (SELECT 1 FROM screening_decisions sd WHERE sd.article_id = a.id AND sd.user_id = ? AND sd.phase = 'abstract' AND sd.decision IN (${ph}))`);
     whereParams.push(uid, ...decisions);
+  }
+
+  if (has_fulltext === 'true') {
+    conditions.push("(a.full_text_url IS NOT NULL AND a.full_text_url != '')");
+  }
+
+  if (any_include === 'true') {
+    conditions.push(`EXISTS (SELECT 1 FROM screening_decisions sd WHERE sd.article_id = a.id AND sd.user_id = ? AND sd.decision = 'include')`);
+    whereParams.push(uid);
   }
 
   if (search) {
@@ -257,6 +266,27 @@ router.post('/:reviewId/articles/:articleId/fetch-fulltext', authMiddleware, asy
   } catch (err: any) {
     res.status(500).json({ error: 'Fetch failed', message: err.message });
   }
+});
+
+// ─── Delete full text ────────────────────────────────────────────────────────
+router.delete('/:reviewId/articles/:articleId/fulltext', authMiddleware, (req: AuthRequest, res: Response) => {
+  const access = reviewAccess(req.params.reviewId, req.user!.id);
+  if (!access || ['viewer'].includes(access.role)) return res.status(403).json({ error: 'Insufficient permissions' });
+
+  const article = db.prepare('SELECT full_text_url FROM articles WHERE id = ? AND review_id = ?')
+    .get(req.params.articleId, req.params.reviewId) as any;
+  if (!article) return res.status(404).json({ error: 'Not found' });
+
+  // Delete the local file if it was stored by us
+  if (article.full_text_url?.startsWith('/api/pdfs/')) {
+    const filename = (article.full_text_url as string).replace('/api/pdfs/', '');
+    const filepath = path.join(PDF_DIR, filename);
+    try { if (fs.existsSync(filepath)) fs.unlinkSync(filepath); } catch {}
+  }
+
+  db.prepare('UPDATE articles SET full_text_url = NULL WHERE id = ? AND review_id = ?')
+    .run(req.params.articleId, req.params.reviewId);
+  res.json({ success: true });
 });
 
 // ─── PDF upload ───────────────────────────────────────────────────────────────

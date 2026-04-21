@@ -4,7 +4,7 @@ import { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { articlesApi } from '../../api/client';
 import ScreeningInterface from '../../components/screening/ScreeningInterface';
-import { SparklesIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { SparklesIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MagnifyingGlassIcon, XMarkIcon, TrashIcon } from '@heroicons/react/24/outline';
 
 // Which abstract-screened articles are eligible for full-text
 type InclusionFilter = 'include' | 'include,maybe' | 'include,maybe,exclude';
@@ -38,6 +38,7 @@ function FullTextManager({ reviewId, inclusionFilter }: { reviewId: string; incl
   const qc = useQueryClient();
   const [fetching, setFetching] = useState<string | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [batchFetching, setBatchFetching] = useState(false);
   const [viewingPdf, setViewingPdf] = useState<{ url: string; title: string } | null>(null);
 
@@ -90,6 +91,18 @@ function FullTextManager({ reviewId, inclusionFilter }: { reviewId: string; incl
     refetch();
     qc.invalidateQueries(['articles', reviewId]);
     setBatchFetching(false);
+  };
+
+  const handleDelete = async (articleId: string) => {
+    if (!confirm('Remove the full text for this article? This will delete the stored PDF.')) return;
+    setDeleting(articleId);
+    try {
+      await articlesApi.deleteFullText(reviewId, articleId);
+      toast.success('Full text removed');
+      refetch();
+      qc.invalidateQueries(['articles', reviewId]);
+    } catch { toast.error('Failed to remove full text'); }
+    finally { setDeleting(null); }
   };
 
   const handleUpload = async (articleId: string, file: File) => {
@@ -180,9 +193,18 @@ function FullTextManager({ reviewId, inclusionFilter }: { reviewId: string; incl
                       className="btn-secondary text-xs py-1 px-2">
                       <ArrowDownTrayIcon className="w-3.5 h-3.5" />
                     </a>
-                    <button onClick={() => handleFetch(article.id)} disabled={fetching === article.id}
+                    <button onClick={() => handleFetch(article.id)} disabled={!!fetching || batchFetching}
                       className="btn-secondary text-xs py-1 px-2 text-gray-400" title="Re-fetch">
                       {fetching === article.id ? '...' : '↺'}
+                    </button>
+                    <button
+                      onClick={() => handleDelete(article.id)}
+                      disabled={deleting === article.id}
+                      title="Remove full text"
+                      className="btn-secondary text-xs py-1 px-2 text-red-400 hover:text-red-600 hover:border-red-300">
+                      {deleting === article.id
+                        ? <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                        : <TrashIcon className="w-3.5 h-3.5" />}
                     </button>
                   </>
                 ) : (

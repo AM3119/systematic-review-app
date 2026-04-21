@@ -14,7 +14,7 @@ async function extractPdfText(localUrl: string): Promise<string | null> {
     const filename = localUrl.replace('/api/pdfs/', '');
     const filepath = path.join(PDF_DIR, filename);
     if (!fs.existsSync(filepath)) return null;
-    const pdfParse = require('pdf-parse');
+    const pdfParse = require('pdf-parse/lib/pdf-parse.js');
     const buf = fs.readFileSync(filepath);
     const data = await pdfParse(buf, { max: 20 }); // first 20 pages
     return data.text?.slice(0, 15000) || null; // cap at ~15k chars
@@ -287,21 +287,36 @@ Rules:
 router.get('/:reviewId/extraction/summary', authMiddleware, (req: AuthRequest, res: Response) => {
   const access = reviewAccess(req.params.reviewId, req.user!.id);
   if (!access) return res.status(403).json({ error: 'Access denied' });
+  const uid = req.user!.id;
   const fields = db.prepare('SELECT * FROM extraction_fields WHERE review_id = ? ORDER BY order_num').all(req.params.reviewId) as any[];
   for (const f of fields as any[]) f.options = JSON.parse(f.options || '[]');
+
+  // Articles with full text that the user has included at any phase
   const includedArticles = db.prepare(`
-    SELECT DISTINCT a.id, a.title, a.authors, a.year, a.journal, a.doi
+    SELECT DISTINCT a.id, a.title, a.authors, a.year, a.journal, a.doi, a.full_text_url
     FROM articles a
-    JOIN screening_decisions sd ON sd.article_id = a.id
-    WHERE sd.review_id = ? AND sd.phase = 'fulltext' AND sd.decision = 'include' AND a.is_duplicate_primary = 1
-  `).all(req.params.reviewId) as any[];
+    WHERE a.review_id = ? AND a.is_duplicate_primary = 1
+    AND a.full_text_url IS NOT NULL AND a.full_text_url != ''
+    AND EXISTS (
+      SELECT 1 FROM screening_decisions sd
+      WHERE sd.article_id = a.id AND sd.user_id = ? AND sd.decision = 'include'
+    )
+    ORDER BY a.created_at ASC
+  `).all(req.params.reviewId, uid) as any[];
+
   const result = [];
   for (const article of includedArticles) {
-    const extracted: Record<string, any> = {};
+    // Build author citation
+    const authors = (article.authors || '').split(';').map((a: string) => a.trim()).filter(Boolean);
+    const lastName = authors[0]?.split(',')[0]?.trim() || authors[0]?.split(' ').pop() || 'Unknown';
+    const citation = authors.length > 1 ? `${lastName} et al. ${article.year || ''}` : `${lastName} ${article.year || ''}`;
+
+    const extracted: Record<string, string> = {};
     for (const field of fields) {
-      const data = db.prepare('SELECT value, user_id FROM extraction_data WHERE article_id = ? AND field_id = ?')
-        .all(article.id, (field as any).id) as any[];
-      extracted[(field as any).field_name] = data.length === 1 ? data[0].value : data.map((d: any) => d.value);
+      // Return only current user's extraction
+      const data = db.prepare('SELECT value FROM extraction_data WHERE article_id = ? AND field_id = ? AND user_id = ?')
+        .get(article.id, (field as any).id, uid) as any;
+      extracted[(field as any).id] = data?.value || '';
     }
     result.push({ ...article, extracted });
   }

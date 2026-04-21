@@ -68,6 +68,7 @@ export const articlesApi = {
   addTag: (reviewId: string, articleId: string, tagId: string) => api.post(`/reviews/${reviewId}/articles/${articleId}/tags`, { tag_id: tagId }),
   removeTag: (reviewId: string, articleId: string, tagId: string) => api.delete(`/reviews/${reviewId}/articles/${articleId}/tags/${tagId}`),
   fetchFullText: (reviewId: string, articleId: string) => api.post(`/reviews/${reviewId}/articles/${articleId}/fetch-fulltext`),
+  deleteFullText: (reviewId: string, articleId: string) => api.delete(`/reviews/${reviewId}/articles/${articleId}/fulltext`),
   uploadPdf: (reviewId: string, articleId: string, file: File) => {
     const fd = new FormData(); fd.append('pdf', file);
     return api.post(`/reviews/${reviewId}/articles/${articleId}/upload-pdf`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });

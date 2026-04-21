@@ -55,10 +55,40 @@ function save(buf: Buffer, dir: string, tag: string): string {
   return `/api/pdfs/${name}`;
 }
 
+// Verify that the PDF actually contains words from the article title (avoids wrong PDFs)
+async function verifyPdfTitle(buf: Buffer, title: string): Promise<boolean> {
+  if (!title) return true;
+  try {
+    const pdfParse = require('pdf-parse/lib/pdf-parse.js');
+    const data = await pdfParse(buf, { max: 2 }); // first 2 pages only
+    const text = (data.text || '').toLowerCase();
+    const words = title.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3); // only meaningful words
+    if (!words.length) return true;
+    const matched = words.filter(w => text.includes(w));
+    return matched.length / words.length >= 0.4; // 40% of title words must appear
+  } catch {
+    return true; // if PDF parsing fails, don't reject
+  }
+}
+
 async function tryPdfUrl(url: string, dir: string, tag: string): Promise<string | null> {
   try {
     const { body } = await get(url);
     if (!isPdf(body)) return null;
+    return save(body, dir, tag);
+  } catch { return null; }
+}
+
+// Like tryPdfUrl but also verifies title match before saving
+async function tryPdfUrlVerified(url: string, dir: string, tag: string, title: string): Promise<string | null> {
+  try {
+    const { body } = await get(url);
+    if (!isPdf(body)) return null;
+    const valid = await verifyPdfTitle(body, title);
+    if (!valid) return null;
     return save(body, dir, tag);
   } catch { return null; }
 }
@@ -132,7 +162,7 @@ async function arxiv(article: any, dir: string): Promise<FetchResult> {
     const xml = body.toString();
     const idMatch = xml.match(/<id>https?:\/\/arxiv\.org\/abs\/([^<]+)<\/id>/);
     if (!idMatch) return { found: false };
-    const local = await tryPdfUrl(`https://arxiv.org/pdf/${idMatch[1]}`, dir, 'arxiv');
+    const local = await tryPdfUrlVerified(`https://arxiv.org/pdf/${idMatch[1]}`, dir, 'arxiv', article.title || '');
     if (local) return { found: true, url: local, source: 'arXiv' };
   } catch {}
   return { found: false };
@@ -193,7 +223,7 @@ async function scihub(article: any, dir: string): Promise<FetchResult> {
       if (!pdfUrl) return { found: false };
       if (pdfUrl.startsWith('//')) pdfUrl = 'https:' + pdfUrl;
       if (pdfUrl.startsWith('/')) pdfUrl = base + pdfUrl;
-      const local = await tryPdfUrl(pdfUrl, dir, 'scihub');
+      const local = await tryPdfUrlVerified(pdfUrl, dir, 'scihub', article.title || '');
       if (local) return { found: true, url: local, source: 'Sci-Hub' };
     } catch {}
     return { found: false };
@@ -227,7 +257,7 @@ async function annasArchive(article: any, dir: string): Promise<FetchResult> {
     if (!dlMatch) return { found: false };
     let dlUrl = dlMatch[1];
     if (dlUrl.startsWith('/')) dlUrl = 'https://annas-archive.org' + dlUrl;
-    const local = await tryPdfUrl(dlUrl, dir, 'annas');
+    const local = await tryPdfUrlVerified(dlUrl, dir, 'annas', article.title || '');
     if (local) return { found: true, url: local, source: "Anna's Archive" };
   } catch {}
   return { found: false };

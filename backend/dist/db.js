@@ -4,13 +4,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.transaction = transaction;
-const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
+const node_sqlite_1 = require("node:sqlite");
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const DB_DIR = path_1.default.join(__dirname, '../../data');
 if (!fs_1.default.existsSync(DB_DIR))
     fs_1.default.mkdirSync(DB_DIR, { recursive: true });
-const db = new better_sqlite3_1.default(path_1.default.join(DB_DIR, 'sra.db'));
+const db = new node_sqlite_1.DatabaseSync(path_1.default.join(DB_DIR, 'sra.db'));
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec(`
@@ -111,6 +111,7 @@ db.exec(`
     review_id TEXT NOT NULL,
     field_name TEXT NOT NULL,
     field_label TEXT NOT NULL,
+    ai_description TEXT DEFAULT '',
     field_type TEXT NOT NULL DEFAULT 'text',
     options TEXT DEFAULT '[]',
     required INTEGER DEFAULT 0,
@@ -197,6 +198,15 @@ db.exec(`
   );
 `);
 function transaction(fn) {
-    return db.transaction(fn)();
+    db.exec('BEGIN');
+    try {
+        const r = fn();
+        db.exec('COMMIT');
+        return r;
+    }
+    catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+    }
 }
 exports.default = db;
