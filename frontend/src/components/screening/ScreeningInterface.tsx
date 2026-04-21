@@ -132,14 +132,14 @@ export default function ScreeningInterface({ reviewId, phase, requireAbstract }:
 
   const bulkDecide = async (decision: 'include' | 'exclude' | 'maybe', reason?: string) => {
     const ids = Array.from(selectedIds);
-    let count = 0;
-    for (const id of ids) {
-      try {
-        await screeningApi.decide(reviewId, { article_id: id, phase, decision, reason: reason || 'Bulk action' });
-        count++;
-      } catch {}
-    }
-    toast.success(`${decision === 'include' ? '✓ Included' : '✗ Excluded'} ${count} articles`);
+    const label = decision === 'include' ? '✓ Included' : decision === 'exclude' ? '✗ Excluded' : '? Maybe';
+    const tid = toast.loading(`${label.slice(2)} ${ids.length} articles…`);
+    const results = await Promise.allSettled(
+      ids.map(id => screeningApi.decide(reviewId, { article_id: id, phase, decision, reason: reason || 'Bulk action' }))
+    );
+    const count = results.filter(r => r.status === 'fulfilled').length;
+    toast.dismiss(tid);
+    toast.success(`${label} ${count} article${count !== 1 ? 's' : ''}`);
     setSelectedIds(new Set());
     setBulkMode(false);
     qc.invalidateQueries(['articles', reviewId]);

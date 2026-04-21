@@ -55,22 +55,29 @@ function save(buf: Buffer, dir: string, tag: string): string {
   return `/api/pdfs/${name}`;
 }
 
-// Verify that the PDF actually contains words from the article title (avoids wrong PDFs)
+// Normalise Unicode diacritics so accented chars match their base letters (e.g. é→e)
+function normDiacritics(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Verify that the PDF actually contains words from the article title (avoids wrong PDFs).
+// Uses ≥5-char words so common short medical words ("study","risk") don't produce false positives.
+// Requires 60% of significant title words to appear in the PDF text.
 async function verifyPdfTitle(buf: Buffer, title: string): Promise<boolean> {
   if (!title) return true;
   try {
     const pdfParse = require('pdf-parse/lib/pdf-parse.js');
     const data = await pdfParse(buf, { max: 2 }); // first 2 pages only
-    const text = (data.text || '').toLowerCase();
-    const words = title.toLowerCase()
+    const text = normDiacritics((data.text || '').toLowerCase());
+    const words = normDiacritics(title.toLowerCase())
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 3); // only meaningful words
-    if (!words.length) return true;
+      .filter(w => w.length >= 5); // only substantive words (≥5 chars)
+    if (!words.length) return true; // very short title — can't verify, allow it
     const matched = words.filter(w => text.includes(w));
-    return matched.length / words.length >= 0.4; // 40% of title words must appear
+    return matched.length / words.length >= 0.6; // 60% of title words must appear
   } catch {
-    return true; // if PDF parsing fails, don't reject
+    return true; // if PDF parsing fails, allow (better than blocking valid PDFs)
   }
 }
 
@@ -95,7 +102,7 @@ async function tryPdfUrlVerified(url: string, dir: string, tag: string, title: s
 
 // ─── Individual sources ───────────────────────────────────────────────────────
 
-async function unpaywall(doi: string, dir: string): Promise<FetchResult> {
+async function unpaywall(doi: string, dir: string, title: string): Promise<FetchResult> {
   if (!doi) return { found: false };
   try {
     const email = process.env.UNPAYWALL_EMAIL || 'researcher@example.com';
@@ -104,7 +111,7 @@ async function unpaywall(doi: string, dir: string): Promise<FetchResult> {
     const loc = d.best_oa_location;
     const pdfUrl = loc?.url_for_pdf;
     if (!pdfUrl) return { found: false };
-    const local = await tryPdfUrl(pdfUrl, dir, 'unpaywall');
+    const local = await tryPdfUrlVerified(pdfUrl, dir, 'unpaywall', title);
     if (local) return { found: true, url: local, source: 'Unpaywall' };
   } catch {}
   return { found: false };
@@ -122,7 +129,7 @@ async function europePmc(article: any, dir: string): Promise<FetchResult> {
       `https://europepmc.org/articles/${hit.pmcid}?pdf=render`,
       `https://pmc.ncbi.nlm.nih.gov/articles/${hit.pmcid}/pdf/`,
     ]) {
-      const local = await tryPdfUrl(url, dir, 'pmc');
+      const local = await tryPdfUrlVerified(url, dir, 'pmc', article.title || '');
       if (local) return { found: true, url: local, source: 'PubMed Central' };
     }
   } catch {}
@@ -132,13 +139,25 @@ async function europePmc(article: any, dir: string): Promise<FetchResult> {
 async function semanticScholar(article: any, dir: string): Promise<FetchResult> {
   try {
     const endpoint = article.doi
-      ? `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(article.doi)}?fields=openAccessPdf`
-      : `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(article.title || '')}&fields=openAccessPdf&limit=1`;
+      ? `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(article.doi)}?fields=openAccessPdf,title`
+      : `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(article.title || '')}&fields=openAccessPdf,title&limit=1`;
     const { body } = await get(endpoint, 8000);
     const d = JSON.parse(body.toString());
-    const pdfUrl = d.openAccessPdf?.url || d.data?.[0]?.openAccessPdf?.url;
+    const hit = d.data?.[0] || d;
+    const pdfUrl = hit.openAccessPdf?.url;
     if (!pdfUrl) return { found: false };
-    const local = await tryPdfUrl(pdfUrl, dir, 'ss');
+    // For title-search results (no DOI), do an API-level title check before downloading
+    if (!article.doi && hit.title) {
+      const aNorm = normDiacritics((article.title || '').toLowerCase()).replace(/[^a-z0-9\s]/g, '');
+      const bNorm = normDiacritics((hit.title || '').toLowerCase()).replace(/[^a-z0-9\s]/g, '');
+      const aWords = new Set(aNorm.split(/\s+/).filter((w: string) => w.length >= 4));
+      const bWords = new Set(bNorm.split(/\s+/).filter((w: string) => w.length >= 4));
+      const intersection = [...aWords].filter(w => bWords.has(w)).length;
+      const union = new Set([...aWords, ...bWords]).size;
+      const jaccard = union > 0 ? intersection / union : 0;
+      if (jaccard < 0.5) return { found: false }; // Different paper — skip
+    }
+    const local = await tryPdfUrlVerified(pdfUrl, dir, 'ss', article.title || '');
     if (local) return { found: true, url: local, source: 'Semantic Scholar' };
   } catch {}
   return { found: false };
@@ -173,9 +192,9 @@ async function biorxiv(article: any, dir: string): Promise<FetchResult> {
   try {
     // bioRxiv/medRxiv DOIs start with 10.1101
     if (!article.doi.startsWith('10.1101')) return { found: false };
-    const local = await tryPdfUrl(`https://www.biorxiv.org/content/${article.doi}.full.pdf`, dir, 'biorxiv');
+    const local = await tryPdfUrlVerified(`https://www.biorxiv.org/content/${article.doi}.full.pdf`, dir, 'biorxiv', article.title || '');
     if (local) return { found: true, url: local, source: 'bioRxiv' };
-    const local2 = await tryPdfUrl(`https://www.medrxiv.org/content/${article.doi}.full.pdf`, dir, 'medrxiv');
+    const local2 = await tryPdfUrlVerified(`https://www.medrxiv.org/content/${article.doi}.full.pdf`, dir, 'medrxiv', article.title || '');
     if (local2) return { found: true, url: local2, source: 'medRxiv' };
   } catch {}
   return { found: false };
@@ -186,12 +205,23 @@ async function coreAc(article: any, dir: string): Promise<FetchResult> {
     const q = article.doi
       ? `doi:"${article.doi}"`
       : `title:"${(article.title || '').slice(0, 80)}"`;
-    const { body } = await get(`https://api.core.ac.uk/v3/search/works?q=${encodeURIComponent(q)}&limit=1&fields=downloadUrl,fullTextIdentifier`, 8000);
+    const { body } = await get(`https://api.core.ac.uk/v3/search/works?q=${encodeURIComponent(q)}&limit=1&fields=downloadUrl,fullTextIdentifier,title`, 8000);
     const d = JSON.parse(body.toString());
     const hit = d.results?.[0];
     const pdfUrl = hit?.downloadUrl || hit?.fullTextIdentifier;
     if (!pdfUrl) return { found: false };
-    const local = await tryPdfUrl(pdfUrl, dir, 'core');
+    // For title-search results (no DOI), do an API-level title sanity check
+    if (!article.doi && hit?.title) {
+      const aNorm = normDiacritics((article.title || '').toLowerCase()).replace(/[^a-z0-9\s]/g, '');
+      const bNorm = normDiacritics((hit.title || '').toLowerCase()).replace(/[^a-z0-9\s]/g, '');
+      const aWords = new Set(aNorm.split(/\s+/).filter((w: string) => w.length >= 4));
+      const bWords = new Set(bNorm.split(/\s+/).filter((w: string) => w.length >= 4));
+      const intersection = [...aWords].filter(w => bWords.has(w)).length;
+      const union = new Set([...aWords, ...bWords]).size;
+      const jaccard = union > 0 ? intersection / union : 0;
+      if (jaccard < 0.5) return { found: false }; // Different paper — skip
+    }
+    const local = await tryPdfUrlVerified(pdfUrl, dir, 'core', article.title || '');
     if (local) return { found: true, url: local, source: 'CORE' };
   } catch {}
   return { found: false };
@@ -268,7 +298,7 @@ async function annasArchive(article: any, dir: string): Promise<FetchResult> {
 export async function fetchFullText(article: any, pdfDir: string): Promise<FetchResult> {
   // Group 1: Fast open-access sources (run together first)
   const oaSources = [
-    unpaywall(article.doi, pdfDir),
+    unpaywall(article.doi, pdfDir, article.title || ''),
     europePmc(article, pdfDir),
     semanticScholar(article, pdfDir),
     arxiv(article, pdfDir),

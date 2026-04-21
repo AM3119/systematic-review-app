@@ -1,5 +1,5 @@
 import { useParams } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useQuery, useQueryClient } from 'react-query';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { articlesApi } from '../../api/client';
@@ -22,8 +22,9 @@ function SimilarityBar({ value }: { value: number }) {
 
 export default function Duplicates() {
   const { reviewId } = useParams<{ reviewId: string }>();
+  const qc = useQueryClient();
   const [detecting, setDetecting] = useState(false);
-  const [threshold, setThreshold] = useState(0.85);
+  const [threshold, setThreshold] = useState(0.80);
   const [expandedAbstracts, setExpandedAbstracts] = useState<Set<string>>(new Set());
 
   const { data: groups = [], refetch } = useQuery(
@@ -36,8 +37,10 @@ export default function Duplicates() {
     setDetecting(true);
     try {
       const { data } = await articlesApi.detectDuplicates(reviewId!, threshold);
-      toast.success(`Found ${data.duplicates_found} duplicates across ${data.groups} groups (threshold: ${Math.round(threshold * 100)}%)`);
+      toast.success(`Found ${data.duplicates_found} duplicate${data.duplicates_found !== 1 ? 's' : ''} across ${data.groups} group${data.groups !== 1 ? 's' : ''} — they are now hidden from screening`);
       refetch();
+      // Invalidate article lists so abstract/fulltext screening immediately reflects the new filtering
+      qc.invalidateQueries(['articles', reviewId]);
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Detection failed');
     } finally {
@@ -47,28 +50,30 @@ export default function Duplicates() {
 
   const setPrimary = async (articleId: string, groupId: string, groupArticles: any[]) => {
     try {
-      for (const a of groupArticles) {
-        await articlesApi.setDuplicate(reviewId!, a.id, {
+      await Promise.all(groupArticles.map(a =>
+        articlesApi.setDuplicate(reviewId!, a.id, {
           is_duplicate_primary: a.id === articleId ? 1 : 0,
           duplicate_group_id: groupId,
-        });
-      }
-      toast.success('Primary article updated');
+        })
+      ));
+      toast.success('Primary article updated — screening list refreshed');
       refetch();
+      qc.invalidateQueries(['articles', reviewId]);
     } catch { toast.error('Failed to update'); }
   };
 
   const keepBoth = async (groupId: string, groupArticles: any[]) => {
     try {
-      for (const a of groupArticles) {
-        await articlesApi.setDuplicate(reviewId!, a.id, { is_duplicate_primary: 1, duplicate_group_id: null });
-      }
+      await Promise.all(groupArticles.map(a =>
+        articlesApi.setDuplicate(reviewId!, a.id, { is_duplicate_primary: 1, duplicate_group_id: null })
+      ));
       toast.success('Both articles kept as unique');
       refetch();
+      qc.invalidateQueries(['articles', reviewId]);
     } catch { toast.error('Failed'); }
   };
 
-  const thresholdLabel = threshold >= 0.98 ? 'Exact match only' : threshold >= 0.95 ? 'Very strict (95%+)' : threshold >= 0.90 ? 'Strict (90%+)' : threshold >= 0.85 ? 'Recommended (85%+)' : threshold >= 0.75 ? 'Loose (75%+)' : 'Very loose (catches more, more false positives)';
+  const thresholdLabel = threshold >= 0.98 ? 'Exact match only' : threshold >= 0.95 ? 'Very strict (95%+)' : threshold >= 0.90 ? 'Strict (90%+)' : threshold >= 0.80 ? 'Recommended (80%+)' : threshold >= 0.75 ? 'Loose (75%+)' : 'Very loose (catches more, more false positives)';
 
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-gray-50 dark:bg-gray-950">
@@ -107,9 +112,9 @@ export default function Duplicates() {
           </div>
           <div className="mt-3 flex gap-2">
             {[
-              { label: 'Strict (95%)', value: 0.95 },
-              { label: 'Recommended (85%)', value: 0.85 },
-              { label: 'Loose (75%)', value: 0.75 },
+              { label: 'Strict (90%)', value: 0.90 },
+              { label: 'Recommended (80%)', value: 0.80 },
+              { label: 'Loose (70%)', value: 0.70 },
             ].map(p => (
               <button key={p.value} onClick={() => setThreshold(p.value)}
                 className={`text-xs px-3 py-1 rounded-lg border transition-colors ${
