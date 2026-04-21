@@ -119,7 +119,65 @@ router.delete('/:reviewId/extraction/fields/:fieldId', auth_1.authMiddleware, (r
     db_1.default.prepare('DELETE FROM extraction_fields WHERE id = ? AND review_id = ?').run(req.params.fieldId, req.params.reviewId);
     res.json({ success: true });
 });
-// ─── Extraction data ──────────────────────────────────────────────────────────
+// ─── Static GET routes MUST be before /:articleId wildcard ───────────────────
+// Check if Ollama is reachable and has the model
+router.get('/:reviewId/extraction/ai-status', auth_1.authMiddleware, async (req, res) => {
+    try {
+        const http = require('http');
+        const url = new URL('/api/tags', OLLAMA_URL);
+        const data = await new Promise((resolve, reject) => {
+            const r = http.get({ hostname: url.hostname, port: url.port || 11434, path: url.pathname }, (resp) => {
+                let d = '';
+                resp.on('data', (c) => d += c);
+                resp.on('end', () => resolve(d));
+            });
+            r.on('error', reject);
+        });
+        const { models = [] } = JSON.parse(data);
+        const available = models.map((m) => m.name);
+        const modelReady = available.some((n) => n.startsWith(OLLAMA_MODEL));
+        res.json({ ollama: true, model: OLLAMA_MODEL, model_ready: modelReady, available_models: available });
+    }
+    catch {
+        res.json({ ollama: false, model: OLLAMA_MODEL, model_ready: false });
+    }
+});
+// Export summary (spreadsheet data)
+router.get('/:reviewId/extraction/summary', auth_1.authMiddleware, (req, res) => {
+    const access = reviewAccess(req.params.reviewId, req.user.id);
+    if (!access)
+        return res.status(403).json({ error: 'Access denied' });
+    const uid = req.user.id;
+    const fields = db_1.default.prepare('SELECT * FROM extraction_fields WHERE review_id = ? ORDER BY order_num').all(req.params.reviewId);
+    for (const f of fields)
+        f.options = JSON.parse(f.options || '[]');
+    const includedArticles = db_1.default.prepare(`
+    SELECT DISTINCT a.id, a.title, a.authors, a.year, a.journal, a.doi, a.full_text_url
+    FROM articles a
+    WHERE a.review_id = ? AND a.is_duplicate_primary = 1
+    AND a.full_text_url IS NOT NULL AND a.full_text_url != ''
+    AND EXISTS (
+      SELECT 1 FROM screening_decisions sd
+      WHERE sd.article_id = a.id AND sd.user_id = ? AND sd.decision = 'include'
+    )
+    ORDER BY a.created_at ASC
+  `).all(req.params.reviewId, uid);
+    const result = [];
+    for (const article of includedArticles) {
+        const authors = (article.authors || '').split(';').map((a) => a.trim()).filter(Boolean);
+        const lastName = authors[0]?.split(',')[0]?.trim() || authors[0]?.split(' ').pop() || 'Unknown';
+        const citation = authors.length > 1 ? `${lastName} et al. ${article.year || ''}` : `${lastName} ${article.year || ''}`;
+        const extracted = {};
+        for (const field of fields) {
+            const data = db_1.default.prepare('SELECT value FROM extraction_data WHERE article_id = ? AND field_id = ? AND user_id = ?')
+                .get(article.id, field.id, uid);
+            extracted[field.id] = data?.value || '';
+        }
+        result.push({ ...article, citation, extracted });
+    }
+    res.json({ fields, articles: result });
+});
+// ─── Extraction data (wildcard :articleId — keep AFTER all static GET routes) ─
 router.get('/:reviewId/extraction/:articleId', auth_1.authMiddleware, (req, res) => {
     const access = reviewAccess(req.params.reviewId, req.user.id);
     if (!access)
@@ -221,28 +279,6 @@ async function ollamaChat(prompt) {
         r.end();
     });
 }
-// Check if Ollama is reachable and has the model
-router.get('/:reviewId/extraction/ai-status', auth_1.authMiddleware, async (req, res) => {
-    try {
-        const http = require('http');
-        const url = new URL('/api/tags', OLLAMA_URL);
-        const data = await new Promise((resolve, reject) => {
-            const r = http.get({ hostname: url.hostname, port: url.port || 11434, path: url.pathname }, (resp) => {
-                let d = '';
-                resp.on('data', (c) => d += c);
-                resp.on('end', () => resolve(d));
-            });
-            r.on('error', reject);
-        });
-        const { models = [] } = JSON.parse(data);
-        const available = models.map((m) => m.name);
-        const modelReady = available.some((n) => n.startsWith(OLLAMA_MODEL));
-        res.json({ ollama: true, model: OLLAMA_MODEL, model_ready: modelReady, available_models: available });
-    }
-    catch {
-        res.json({ ollama: false, model: OLLAMA_MODEL, model_ready: false });
-    }
-});
 router.post('/:reviewId/extraction/:articleId/ai-extract', auth_1.authMiddleware, async (req, res) => {
     const access = reviewAccess(req.params.reviewId, req.user.id);
     if (!access || ['viewer', 'highlighter'].includes(access.role))
@@ -331,43 +367,5 @@ Rules:
         }
         res.status(500).json({ error: 'AI extraction failed', message: err.message });
     }
-});
-// ─── Export summary ───────────────────────────────────────────────────────────
-router.get('/:reviewId/extraction/summary', auth_1.authMiddleware, (req, res) => {
-    const access = reviewAccess(req.params.reviewId, req.user.id);
-    if (!access)
-        return res.status(403).json({ error: 'Access denied' });
-    const uid = req.user.id;
-    const fields = db_1.default.prepare('SELECT * FROM extraction_fields WHERE review_id = ? ORDER BY order_num').all(req.params.reviewId);
-    for (const f of fields)
-        f.options = JSON.parse(f.options || '[]');
-    // Articles with full text that the user has included at any phase
-    const includedArticles = db_1.default.prepare(`
-    SELECT DISTINCT a.id, a.title, a.authors, a.year, a.journal, a.doi, a.full_text_url
-    FROM articles a
-    WHERE a.review_id = ? AND a.is_duplicate_primary = 1
-    AND a.full_text_url IS NOT NULL AND a.full_text_url != ''
-    AND EXISTS (
-      SELECT 1 FROM screening_decisions sd
-      WHERE sd.article_id = a.id AND sd.user_id = ? AND sd.decision = 'include'
-    )
-    ORDER BY a.created_at ASC
-  `).all(req.params.reviewId, uid);
-    const result = [];
-    for (const article of includedArticles) {
-        // Build author citation
-        const authors = (article.authors || '').split(';').map((a) => a.trim()).filter(Boolean);
-        const lastName = authors[0]?.split(',')[0]?.trim() || authors[0]?.split(' ').pop() || 'Unknown';
-        const citation = authors.length > 1 ? `${lastName} et al. ${article.year || ''}` : `${lastName} ${article.year || ''}`;
-        const extracted = {};
-        for (const field of fields) {
-            // Return only current user's extraction
-            const data = db_1.default.prepare('SELECT value FROM extraction_data WHERE article_id = ? AND field_id = ? AND user_id = ?')
-                .get(article.id, field.id, uid);
-            extracted[field.id] = data?.value || '';
-        }
-        result.push({ ...article, extracted });
-    }
-    res.json({ fields, articles: result });
 });
 exports.default = router;
